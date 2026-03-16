@@ -1,0 +1,113 @@
+{
+  "project": "Cloud vs Edge Energy Trade-off Study",
+  "last_updated": "2026-03-16T10:40:30.109767",
+  "phase": "Ready for GCP experiment runs \u2014 single instance lifecycle confirmed",
+  "completed_steps": [
+    "0.1 Create directory tree",
+    "0.2 Initialize AGENT_MEMORY.json",
+    "0.3 Create SQLite database with all 5 tables",
+    "1.0 System update/upgrade",
+    "1.1 Docker 29.3.0 verified",
+    "1.2 Python 3.12.3 + pip + packages",
+    "1.3 Containernet verified",
+    "1.4 iperf3 3.16 verified",
+    "1.5 Scaphandre 1.0.2 verified (RAPL available)",
+    "1.6 PowerStat 0.04.03 verified",
+    "1.7 PowerTOP 2.15 verified",
+    "1.8 SQLite3 3.45.1 verified",
+    "1.9 jq 1.7 verified",
+    "2.1 topology.py written (uses edgecloud-workload:2.0 image)",
+    "2.2 inject_latency.py written",
+    "2.3 Topology validated: 3 runs passed",
+    "2.4 AGENT_MEMORY.json updated",
+    "3.1 capture_baseline.sh written",
+    "3.2 run_workload.sh written",
+    "3.3 parse_scaphandre.py written",
+    "3.4 parse_powerstat.py written",
+    "4.1 setup_droplet.sh written",
+    "4.2 run_cloud_workload.sh written",
+    "4.3 derive_energy.py written",
+    "4.4 teardown_droplet.sh written",
+    "5.0 run_experiment.py written",
+    "5.1 compare_results.py written",
+    "6.0 validate_pipeline.py written",
+    "6.1 Pipeline validation: 50/51 passed",
+    "3.5 Fixed Scaphandre timestamp parsing bug in parse_scaphandre.py",
+    "3.6 Fixed PowerStat zero power crash (-R -z flags) in bash scripts",
+    "DO Droplet 556722575 destroyed",
+    "4.1 GCP SDK installed and authenticated",
+    "4.2 GCP Python client libraries installed",
+    "4.3 GCP e2-micro instance provisioned"
+  ],
+  "pending_steps": [
+    "Run setup_gcp_instance.sh to provision GCP e2-micro",
+    "Confirm GCP instance ready before starting 1000-run batches"
+  ],
+  "failed_steps": [],
+  "environment": {
+    "os": "Ubuntu",
+    "containernet_installed": true,
+    "docker_installed": true,
+    "iperf3_installed": true,
+    "scaphandre_installed": true,
+    "powerstat_installed": true,
+    "powertop_installed": true,
+    "sqlite3_installed": true,
+    "python_deps_installed": true,
+    "topology_created": true,
+    "topology_tested": true,
+    "baseline_captured": false,
+    "cloud_droplet_ready": true,
+    "gcp_project_id": "project-8067bcb9-192a-4c85-9c5",
+    "gcp_region": "us-central1",
+    "gcp_instance_id": "4478506382799514660",
+    "gcp_instance_ip": "35.238.201.243",
+    "gcp_instance_type": "e2-micro",
+    "gcp_carbon_api_enabled": true,
+    "gcp_credentials_configured": true,
+    "gcp_sdk_installed": true
+  },
+  "experiment": {
+    "workloads_completed": [
+      "file_transfer"
+    ],
+    "workloads_pending": [
+      "file_transfer_small",
+      "file_transfer_medium",
+      "file_transfer_large",
+      "video_encoding",
+      "database_query",
+      "web_request"
+    ],
+    "total_runs_completed": 3,
+    "total_runs_target": 1000,
+    "last_run_id": "test_gcp_001",
+    "sessions_awaiting_gcp_data": [
+      "test_gcp_001"
+    ],
+    "sessions_with_gcp_data": []
+  },
+  "data": {
+    "db_path": "/home/dem/major_project/edge_cloud_study/data/results.db",
+    "logs_dir": "/home/dem/major_project/edge_cloud_study/logs/",
+    "exports_dir": "/home/dem/major_project/edge_cloud_study/exports/"
+  },
+  "notes": [
+    "RAPL is available \u2014 Scaphandre will have full hardware energy measurement accuracy",
+    "Project workspace is at /home/dem/major_project/edge_cloud_study/ with symlink at ~/edge_cloud_study",
+    "Docker image: edgecloud-workload:2.0 (has iperf3 3.9, python3 3.10, ffmpeg)",
+    "Topology uses absolute paths to avoid sudo ~ resolution issues",
+    "Container cmd output requires ANSI escape stripping for JSON parsing",
+    "Pipeline validation at 2026-03-16T01:33:38: 50/51 passed, 1 failed",
+    "All 6 phases of infrastructure setup complete \u2014 ready for 1000-run batches pending user confirmation",
+    "Fixed Scaphandre JSON parser to correctly extract timestamps from inside the host object.",
+    "Fixed PowerStat script arguments by appending -R -z -d 0 1 3600 to prevent crashing when device is plugged into AC power (not discharging battery).",
+    "Test run data (21 runs) was from validation phase only. Real experiment runs not yet started.",
+    "GCP Carbon Footprint API has a 1-2 month reporting lag. fetch_gcp_energy.py must be run weeks after experiment runs, not immediately. run_experiment.py handles this via separate run_mode and fetch_mode.",
+    "DO Droplet 556722575 destroyed on 2026-03-16. Migrating cloud infrastructure to GCP.",
+    "Pipeline validation at 2026-03-16T10:16:24.363592: 53/55 passed, 2 failed",
+    "Pipeline validation at 2026-03-16T10:21:31.054464: 55/55 passed, 0 failed",
+    "GCP instance edgecloud-server created in us-central1-a (ID: 4478506382799514660, IP: 35.238.201.243)",
+    "Pipeline validation at 2026-03-16T10:39:45.729482: 53/53 passed, 0 failed"
+  ]
+}
