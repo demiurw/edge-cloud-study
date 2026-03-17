@@ -99,6 +99,8 @@ powertop --csv="$POWERTOP_START" --time=3 > /dev/null 2>&1 || true
 
 # --- Run the topology workload ---
 echo "[3/5] Running topology workload ($RUNS runs)..."
+
+# Run the topology
 python3 "$TOPOLOGY_SCRIPT" \
     --workload "$WORKLOAD" \
     --size "$SIZE" \
@@ -205,14 +207,44 @@ with open("$JSONL_FILE") as f:
 db.commit()
 inserted = cur.execute("SELECT COUNT(*) FROM edge_runs WHERE session_id=?", ("$SESSION_ID",)).fetchone()[0]
 print(f"Inserted {inserted} runs into edge_runs table")
+
+# Since Edge client and server share the identical host, we immediately duplicate
+# the aggregated server host measurements as the client measurements into client_energy_runs.
+cur.execute("SELECT SUM(data_sent_mb), SUM(duration_seconds), AVG(cpu_avg_percent) FROM edge_runs WHERE session_id=?", ("$SESSION_ID",))
+res = cur.fetchone()
+data_sent = res[0] if res and res[0] is not None else 0.0
+duration = res[1] if res and res[1] is not None else float($TOTAL_DURATION_S)
+cpu_avg = res[2] if res and res[2] is not None else 0.0
+
+cur.execute("""
+    INSERT INTO client_energy_runs (
+        session_id, environment, workload_type, workload_size_mb, run_number,
+        timestamp_start, timestamp_end, duration_seconds, data_sent_mb,
+        client_scaphandre_joules, client_powerstat_joules, client_cpu_peak_percent,
+        client_cpu_avg_percent, response_time_ms, notes
+    ) VALUES (?, 'edge', ?, 0, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 'derived_from_server_edge_host')
+""", (
+    "$SESSION_ID", "$WORKLOAD", $RUNS, "$TIMESTAMP_START", "$TIMESTAMP_END",
+    duration, data_sent, $SCAPH_JOULES, $PSTAT_JOULES, cpu_avg
+))
+db.commit()
+print("Populated client_energy_runs symmetrically.")
 db.close()
 PYEOF
+
+CLIENT_SCAPH_J=$SCAPH_JOULES
+CLIENT_PSTAT_J=$PSTAT_JOULES
 
 # --- Export to CSV ---
 CSV_FILE="$EXPORTS_DIR/${SESSION_ID}_edge.csv"
 sqlite3 -header -csv "$DB_PATH" \
     "SELECT * FROM edge_runs WHERE session_id='$SESSION_ID';" > "$CSV_FILE"
-echo "Exported to: $CSV_FILE"
+echo "Exported server edge data to: $CSV_FILE"
+
+CLIENT_CSV_FILE="$EXPORTS_DIR/${SESSION_ID}_client_edge.csv"
+sqlite3 -header -csv "$DB_PATH" \
+    "SELECT * FROM client_energy_runs WHERE session_id='$SESSION_ID' AND environment='edge';" > "$CLIENT_CSV_FILE"
+echo "Exported client edge data to: $CLIENT_CSV_FILE"
 
 # --- Print summary ---
 echo ""
@@ -223,10 +255,17 @@ echo "  Session:          $SESSION_ID"
 echo "  Workload:         $WORKLOAD ($SIZE)"
 echo "  Runs completed:   $ACTUAL_RUNS / $RUNS"
 echo "  Total duration:   ${TOTAL_DURATION_S}s"
-echo "  Scaphandre total: ${SCAPH_JOULES} J"
-echo "  PowerStat total:  ${PSTAT_JOULES} J"
-echo "  Per-run energy:   ~${SCAPH_PER_RUN} J (Scaphandre)"
-echo "  Per-run energy:   ~${PSTAT_PER_RUN} J (PowerStat)"
+echo "  Server Edge Energy (1000 runs):"
+echo "    Scaphandre total: ${SCAPH_JOULES} J"
+echo "    PowerStat total:  ${PSTAT_JOULES} J"
+echo "    Per-run (~):      ${SCAPH_PER_RUN} J (Scaphandre)"
+echo "    Per-run (~):      ${PSTAT_PER_RUN} J (PowerStat)"
+echo "  Client Edge Energy (TOTAL session):"
+echo "    Scaphandre total: ${CLIENT_SCAPH_J} J"
+echo "    PowerStat total:  ${CLIENT_PSTAT_J} J"
+echo "  JSONL:            $JSONL_FILE"
+echo "  Server CSV:       $CSV_FILE"
+echo "  Client CSV:       $CLIENT_CSV_FILE"
 echo "  JSONL:            $JSONL_FILE"
 echo "  CSV:              $CSV_FILE"
 echo "============================================"

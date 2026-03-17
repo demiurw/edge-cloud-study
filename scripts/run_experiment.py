@@ -195,24 +195,25 @@ def main():
         print("\n>>> EDGE ENVIRONMENT <<<")
 
         # Step 1: Baseline
-        if not confirm("Capture baseline energy measurements?"):
-            print("Skipping baseline.")
+        if not confirm("Capture client-side baseline energy measurements?"):
+            print("Skipping client baseline.")
         else:
             run_script(
-                f"sudo bash {SCRIPTS_EDGE}/capture_baseline.sh "
-                f"--session-id {args.session_id} --workload-type {args.workload}",
-                "Capturing Edge Baseline"
+                f"sudo bash {SCRIPTS_EDGE}/capture_client_baseline.sh "
+                f"--session-id {args.session_id} --environment edge "
+                f"--workload-type {args.workload}",
+                "Capturing Edge Client Baseline"
             )
 
             # Show baseline
             conn = sqlite3.connect(DB_PATH)
             row = conn.execute(
-                "SELECT * FROM edge_baselines WHERE session_id=? ORDER BY baseline_id DESC LIMIT 1",
+                "SELECT * FROM client_energy_baselines WHERE session_id=? AND environment='edge' ORDER BY baseline_id DESC LIMIT 1",
                 (args.session_id,)
             ).fetchone()
             conn.close()
             if row:
-                print(f"\nBaseline: PowerStat={row[5]}W, Scaphandre={row[4]}W, CPU={row[6]}%")
+                print(f"\nClient Baseline (Edge): PowerStat={row[6]}W, Scaphandre={row[5]}W, CPU={row[7]}%")
 
             if not confirm("Baseline looks good. Proceed with workload runs?"):
                 print("Stopping at baseline checkpoint.")
@@ -236,7 +237,15 @@ def main():
         save_memory(mem)
 
         print("\nEdge runs complete!")
-        if args.environment == "edge" and not confirm("Continue to comparison summary?"):
+        
+        # Run comparison immediately
+        run_script(
+            f"python3 {PROJECT_DIR}/scripts/analysis/compare_client_energy.py "
+            f"--workload {args.workload}",
+            f"Client-Side Energy Comparison ({args.workload})"
+        )
+
+        if args.environment == "edge" and not confirm("Continue to next step?"):
             return
 
     # === CLOUD RUNS ===
@@ -279,6 +288,31 @@ def main():
         if not confirm(f"Run cloud workload on {instance_ip}?"):
             return
 
+        # Step 1: Client baseline for cloud environment
+        if not confirm("Capture client-side baseline energy measurements (cloud mode)?"):
+            print("Skipping client cloud baseline.")
+        else:
+            run_script(
+                f"sudo bash {SCRIPTS_EDGE}/capture_client_baseline.sh "
+                f"--session-id {args.session_id} --environment cloud "
+                f"--workload-type {args.workload}",
+                "Capturing Cloud Client Baseline"
+            )
+
+            # Show baseline
+            conn = sqlite3.connect(DB_PATH)
+            row = conn.execute(
+                "SELECT * FROM client_energy_baselines WHERE session_id=? AND environment='cloud' ORDER BY baseline_id DESC LIMIT 1",
+                (args.session_id,)
+            ).fetchone()
+            conn.close()
+            if row:
+                print(f"\nClient Baseline (Cloud): PowerStat={row[6]}W, Scaphandre={row[5]}W, CPU={row[7]}%")
+
+            if not confirm("Baseline looks good. Proceed with cloud workload runs?"):
+                print("Stopping at baseline checkpoint.")
+                return
+
         # Run cloud workload
         run_script(
             f"bash {SCRIPTS_CLOUD}/run_cloud_workload.sh "
@@ -305,8 +339,18 @@ def main():
         print("  GCP CLOUD WORKLOADS COMPLETE FOR THIS BATCH")
         print("="*60)
 
-    # === COMPARISON ===
-    if args.environment == "both":
+        # Run comparison immediately
+        run_script(
+            f"python3 {PROJECT_DIR}/scripts/analysis/compare_client_energy.py "
+            f"--workload {args.workload}",
+            f"Client-Side Energy Comparison ({args.workload})"
+        )
+        
+        if not confirm("Continue?"):
+            return
+
+    # === COMPARISON (Deprecated legacy summary) ===
+    if args.environment == "both" and False: # we run compare_client_energy instead
         generate_comparison(args.session_id, args.workload)
 
     # Update memory
@@ -329,7 +373,15 @@ def main():
         print("\n" + "*" * 60)
         print("  ALL WORKLOAD BATCHES COMPLETE")
         print("*" * 60)
-        print(f"  Instance has been running since: {start_time}")
+        
+        print("\nGenerating final client-side comparison sequence...")
+        for w in mem.setdefault("experiment", {}).get("workloads_completed", []):
+             run_script(
+                f"python3 {PROJECT_DIR}/scripts/analysis/compare_client_energy.py --workload {w}",
+                f"Final Client Comparison: {w}"
+             )
+        
+        print(f"\n  Instance has been running since: {start_time}")
         print("  Workload boundaries logged at: logs/cloud/workload_boundaries.log")
         print("\n  NEXT STEPS:")
         print("  1. Run teardown_gcp_instance.sh to destroy the instance and stop billing")

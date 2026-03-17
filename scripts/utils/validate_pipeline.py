@@ -89,15 +89,18 @@ def main():
         "topology/topology.py",
         "topology/inject_latency.py",
         "scripts/edge/capture_baseline.sh",
+        "scripts/edge/capture_client_baseline.sh",
         "scripts/edge/run_workload.sh",
         "scripts/utils/parse_scaphandre.py",
         "scripts/utils/parse_powerstat.py",
+        "scripts/utils/measure_client_energy.py",
         "scripts/cloud/setup_gcp_instance.sh",
         "scripts/cloud/run_cloud_workload.sh",
         "scripts/cloud/fetch_gcp_energy.py",
         "scripts/cloud/teardown_gcp_instance.sh",
         "scripts/run_experiment.py",
         "scripts/analysis/compare_results.py",
+        "scripts/analysis/compare_client_energy.py",
     ]
     for f in required_files:
         path = os.path.join(PROJECT_DIR, f)
@@ -107,11 +110,19 @@ def main():
     print("\n--- Database Tables ---")
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    expected_tables = ["edge_runs", "edge_baselines", "cloud_runs", "cloud_reported_energy", "sessions"]
+    expected_tables = ["edge_runs", "edge_baselines", "cloud_runs", "cloud_reported_energy", "sessions", "client_energy_runs", "client_energy_baselines"]
     cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
     existing_tables = [row[0] for row in cur.fetchall()]
     for t in expected_tables:
         v.add(f"Table: {t}", t in existing_tables)
+
+    # Verify new schema directly
+    if "client_energy_runs" in existing_tables:
+        cur.execute("PRAGMA table_info(client_energy_runs)")
+        cols = [r[1] for r in cur.fetchall()]
+        v.add("client_energy_runs schema", "client_scaphandre_joules" in cols and "client_cpu_peak_percent" in cols)
+    else:
+        v.add("client_energy_runs schema", False)
 
     # === CHECK 4: Tool availability ===
     print("\n--- Tool Availability ---")
@@ -245,6 +256,36 @@ def main():
         cur.execute("PRAGMA table_info(cloud_reported_energy)")
         cols = [r[1] for r in cur.fetchall()]
         v.add("cloud_reported_energy has attribution_method", "attribution_method" in cols)
+
+    # === CHECK 13: Client-side integration ===
+    print("\n--- Client-side Energy Integration ---")
+    
+    with open(os.path.join(PROJECT_DIR, "scripts/utils/measure_client_energy.py")) as f:
+        mce = f.read()
+        v.add("measure_client_energy handles STOP signal", "STOP" in mce and "sys.stdin" in mce)
+        v.add("measure_client_energy handles MEASUREMENT_STARTED", "MEASUREMENT_STARTED" in mce)
+
+    with open(os.path.join(PROJECT_DIR, "scripts/edge/run_workload.sh")) as f:
+        rw = f.read()
+        v.add("run_workload calls measure_client_energy edge", "measure_client_energy.py" in rw and "--environment \"edge\"" in rw)
+
+    if not args.skip_cloud:
+        with open(os.path.join(PROJECT_DIR, "scripts/cloud/run_cloud_workload.sh")) as f:
+            rcw = f.read()
+            v.add("run_cloud_workload calls measure_client_energy cloud", "measure_client_energy.py" in rcw and "--environment \"cloud\"" in rcw)
+            
+    with open(os.path.join(PROJECT_DIR, "scripts/analysis/compare_client_energy.py")) as f:
+        cce = f.read()
+        v.add("compare_client_energy queries both envs", "edge" in cce and "cloud" in cce and "client_energy_runs" in cce)
+        
+    with open(os.path.join(PROJECT_DIR, "scripts/run_experiment.py")) as f:
+        re = f.read()
+        v.add("run_experiment calls capture_client_baseline", "capture_client_baseline.sh" in re)
+        v.add("run_experiment calls compare_client_energy", "compare_client_energy.py" in re)
+
+    with open(os.path.join(PROJECT_DIR, "scripts/cloud/fetch_gcp_energy.py")) as f:
+        fge = f.read()
+        v.add("fetch_gcp_energy appends GCP data", "df['Cloud_Server_GCP']" in fge)
 
     # === FINAL SUMMARY ===
     total, passed, failed = v.summary()

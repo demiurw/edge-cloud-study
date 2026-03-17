@@ -17,6 +17,7 @@ PROJECT_DIR="/home/dem/major_project/edge_cloud_study"
 DB_PATH="$PROJECT_DIR/data/results.db"
 LOGS_CLOUD="$PROJECT_DIR/logs/cloud"
 EXPORTS_DIR="$PROJECT_DIR/exports"
+UTILS_DIR="$PROJECT_DIR/scripts/utils"
 
 # --- Parse arguments ---
 SESSION_ID=""
@@ -77,6 +78,26 @@ ssh -o StrictHostKeyChecking=no "ubuntu@$INSTANCE_IP" "pkill iperf3 2>/dev/null;
 
 # --- Run workloads ---
 echo "[2/3] Running $RUNS cloud workload iterations..."
+
+# Wrap workload with client energy measurement
+echo "  Starting client-side energy measurement..."
+CLIENT_MEASURE_SCRIPT="$UTILS_DIR/measure_client_energy.py"
+FIFO_IN=$(mktemp -u)
+mkfifo "$FIFO_IN"
+
+# Start the measurement script in the background, connecting its stdin to the FIFO
+# MUST run with sudo to access Scaphandre/PowerStat RAPL data
+sudo python3 "$CLIENT_MEASURE_SCRIPT" \
+    --session-id "$SESSION_ID" --environment "cloud" \
+    --workload "$WORKLOAD" --size "$SIZE" --run-number "$RUNS" \
+    <> "$FIFO_IN" > /tmp/client_energy_out_$$.txt &
+MEASURE_PID=$!
+
+# Wait for it to be ready
+while ! grep -q "MEASUREMENT_STARTED" /tmp/client_energy_out_$$.txt 2>/dev/null; do
+    sleep 0.5
+done
+echo "  Client measurement ready."
 
 > "$CLOUD_LOG"  # Clear log files
 > "$GCP_LOG"
@@ -269,6 +290,17 @@ done
 
 kill -9 $POLL_PID 2>/dev/null || true
 
+# Stop the measurement script
+echo "  Stopping client-side energy measurement..."
+echo "STOP" | sudo tee "$FIFO_IN" >/dev/null
+wait "$MEASURE_PID"
+
+# Parse client energy summary
+CLIENT_SUMMARY=$(tail -n 1 /tmp/client_energy_out_$$.txt)
+rm -f /tmp/client_energy_out_$$.txt "$FIFO_IN"
+CLIENT_SCAPH_J=$(echo "$CLIENT_SUMMARY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('scaphandre_joules', 0))" 2>/dev/null || echo 0)
+CLIENT_PSTAT_J=$(echo "$CLIENT_SUMMARY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('powerstat_joules', 0))" 2>/dev/null || echo 0)
+
 # --- Insert into database ---
 echo "[3/3] Inserting results into cloud_runs table..."
 
@@ -310,6 +342,12 @@ PYEOF
 CSV_FILE="$EXPORTS_DIR/${SESSION_ID}_cloud.csv"
 sqlite3 -header -csv "$DB_PATH" \
     "SELECT * FROM cloud_runs WHERE session_id='$SESSION_ID';" > "$CSV_FILE"
+echo "Exported server cloud data to: $CSV_FILE"
+
+CLIENT_CSV_FILE="$EXPORTS_DIR/${SESSION_ID}_client_cloud.csv"
+sqlite3 -header -csv "$DB_PATH" \
+    "SELECT * FROM client_energy_runs WHERE session_id='$SESSION_ID' AND environment='cloud';" > "$CLIENT_CSV_FILE"
+echo "Exported client cloud data to: $CLIENT_CSV_FILE"
 
 # --- Between-workload Cleanup ---
 echo "[4/4] Performing between-workload cleanup..."
@@ -337,7 +375,10 @@ echo "============================================"
 echo "  Runs:     $RUNS"
 echo "  Log:      $CLOUD_LOG"
 echo "  GCP Log:  $GCP_LOG"
-echo "  CSV:      $CSV_FILE"
+echo "  Server CSV:  $CSV_FILE"
+echo "  Client CSV:  $CLIENT_CSV_FILE"
+echo "  Client Scaph (J): ${CLIENT_SCAPH_J} J"
+echo "  Client Pstat (J): ${CLIENT_PSTAT_J} J"
 echo "============================================"
 echo "  Workload batch complete. Instance still running."
 echo "  Ready for next batch."

@@ -272,8 +272,52 @@ def fetch_mode(args):
 
                 fetched.append(session_id)
                 print(f"  ✅ {session_id}/{row['workload_type']}: "
-                      f"{electricity_kwh:.6f} kWh = {derived_joules:.2f} J, "
-                      f"{gross_carbon:.2f} gCO2e")
+                      f"{workload_kwh:.6f} kWh = {workload_joules:.2f} J, "
+                      f"{workload_gross_carbon:.2f} gCO2e")
+
+                # Regenerate client comparison script now that cloud data is collected
+                import pandas as pd
+                import numpy as np
+                import subprocess
+                
+                # We need to compute metrics for the GCP server energy from this row
+                # Get count and data sent from cloud_runs
+                cur.execute("""
+                    SELECT COUNT(*), SUM(data_sent_mb) 
+                    FROM cloud_runs 
+                    WHERE session_id = ? AND workload_type = ?
+                """, (session_id, row["workload_type"]))
+                run_stats = cur.fetchone()
+                
+                runs = run_stats[0] if run_stats[0] else 1
+                data_mb = run_stats[1] if run_stats[1] else 0.0
+                data_gb = data_mb / 1024.0
+                
+                gcp_j_per_req = workload_joules / runs
+                gcp_j_per_gb = workload_joules / data_gb if data_gb > 0 else 0
+                
+                csv_path = f"/home/dem/major_project/edge_cloud_study/exports/comparison_client_{row['workload_type']}.csv"
+                try:
+                    df = pd.read_csv(csv_path)
+                    
+                    # Create the Cloud_Server_GCP column mapping
+                    gcp_col = [
+                        gcp_j_per_req,
+                        gcp_j_per_gb,
+                        np.nan,  # Watts_avg doesn't map perfectly the same way
+                        workload_joules,
+                        np.nan,  # Std_Dev
+                        np.nan   # Response_Time
+                    ]
+                    
+                    df['Cloud_Server_GCP'] = gcp_col
+                    df.to_csv(csv_path, index=False)
+                    print(f"  => Appended GCP server energy to {csv_path}")
+                    
+                    # Call the comparison tool to print the updated table directly
+                    subprocess.run(["python3", "/home/dem/major_project/edge_cloud_study/scripts/analysis/compare_client_energy.py", "--workload", row["workload_type"]])
+                except Exception as e:
+                    print(f"  => Could not update comparison CSV: {e}")
 
             except Exception as e:
                 print(f"  ⏳ {session_id}/{row['workload_type']}: "

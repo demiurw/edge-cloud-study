@@ -1,7 +1,7 @@
 {
   "project": "Cloud vs Edge Energy Trade-off Study",
-  "last_updated": "2026-03-16T10:40:30.109767",
-  "phase": "Ready for GCP experiment runs \u2014 single instance lifecycle confirmed",
+  "last_updated": "2026-03-17T10:21:48.935530",
+  "phase": "Ready for full experiment runs \u2014 dual measurement active",
   "completed_steps": [
     "0.1 Create directory tree",
     "0.2 Initialize AGENT_MEMORY.json",
@@ -37,7 +37,9 @@
     "DO Droplet 556722575 destroyed",
     "4.1 GCP SDK installed and authenticated",
     "4.2 GCP Python client libraries installed",
-    "4.3 GCP e2-micro instance provisioned"
+    "4.3 GCP e2-micro instance provisioned",
+    "DB.1 client_energy_runs and client_energy_baselines tables created",
+    "8. Integrate client-side energy measurement (measure_client_energy.py, baseline capture, and DB updates)"
   ],
   "pending_steps": [
     "Run setup_gcp_instance.sh to provision GCP e2-micro",
@@ -79,11 +81,13 @@
       "database_query",
       "web_request"
     ],
-    "total_runs_completed": 3,
+    "total_runs_completed": 13,
     "total_runs_target": 1000,
-    "last_run_id": "test_gcp_001",
+    "last_run_id": "test_100_runs",
     "sessions_awaiting_gcp_data": [
-      "test_gcp_001"
+      "test_gcp_001",
+      "test_run_001",
+      "test_100_runs"
     ],
     "sessions_with_gcp_data": []
   },
@@ -108,6 +112,9 @@
     "Pipeline validation at 2026-03-16T10:16:24.363592: 53/55 passed, 2 failed",
     "Pipeline validation at 2026-03-16T10:21:31.054464: 55/55 passed, 0 failed",
     "GCP instance edgecloud-server created in us-central1-a (ID: 4478506382799514660, IP: 35.238.201.243)",
-    "Pipeline validation at 2026-03-16T10:39:45.729482: 53/53 passed, 0 failed"
+    "Pipeline validation at 2026-03-16T10:39:45.729482: 53/53 passed, 0 failed",
+    "Pipeline validation at 2026-03-17T10:21:48.935520: 66/66 passed, 0 failed",
+    "Client-side Dual Measurement: Captured on the local Ubuntu host concurrently with edge and cloud workloads using measure_client_energy.py to compute symmetric comparisons immediately after runs.",
+    "Cloud Client Energy Fix: Resolved 0J issue in cloud runs by adding surgical sudo to measure_client_energy.py and fixing FIFO cross-user signaling. Verified with session cloud_verify_002."
   ]
 }
