@@ -2,9 +2,9 @@
 # =============================================================================
 # run_workload.sh — Run Edge Workloads with Energy Monitoring
 # =============================================================================
-# Starts background energy monitors (Scaphandre, PowerStat), runs the
-# Containernet topology workload, then parses all logs and inserts results
-# into the edge_runs SQLite table.
+# Server-side energy (Scaphandre, PowerStat) runs on Machine A as before.
+# Client-side energy is measured independently on Machine B via SSH
+# using client_daemon.sh — eliminating the same-machine measurement bias.
 #
 # Usage:
 #   sudo bash run_workload.sh --session-id <id> --workload <type> \
@@ -25,6 +25,12 @@ EXPORTS_DIR="$PROJECT_DIR/exports"
 UTILS_DIR="$PROJECT_DIR/scripts/utils"
 MEMORY_FILE="$PROJECT_DIR/AGENT_MEMORY.json"
 
+# --- Read Machine B config ---
+CLIENT_IP=$(python3   -c "import json; m=json.load(open('$MEMORY_FILE')); print(m['environment']['client_machine_ip'])")
+CLIENT_USER=$(python3 -c "import json; m=json.load(open('$MEMORY_FILE')); print(m['environment']['client_machine_user'])")
+SSH_KEY=$(python3     -c "import json; m=json.load(open('$MEMORY_FILE')); print(m['environment']['client_machine_ssh_key'])")
+SSH_CLIENT="ssh -o StrictHostKeyChecking=no -i $SSH_KEY ${CLIENT_USER}@${CLIENT_IP}"
+
 # --- Parse arguments ---
 SESSION_ID=""
 WORKLOAD=""
@@ -34,14 +40,14 @@ RUNS=1000
 while [[ $# -gt 0 ]]; do
     case $1 in
         --session-id) SESSION_ID="$2"; shift 2 ;;
-        --workload) WORKLOAD="$2"; shift 2 ;;
-        --size) SIZE="$2"; shift 2 ;;
-        --runs) RUNS="$2"; shift 2 ;;
+        --workload)   WORKLOAD="$2";   shift 2 ;;
+        --size)       SIZE="$2";       shift 2 ;;
+        --runs)       RUNS="$2";       shift 2 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac
 done
 
-if [[ -z "$SESSION_ID" ]] || [[ -z "$WORKLOAD" ]]; then
+if [[ -z "$SESSION_ID" || -z "$WORKLOAD" ]]; then
     echo "ERROR: --session-id and --workload are required"
     echo "Usage: sudo bash run_workload.sh --session-id <id> --workload <type> --size <size> --runs <N>"
     exit 1
@@ -72,35 +78,50 @@ echo "  Workload:   $WORKLOAD"
 echo "  Size:       $SIZE"
 echo "  Runs:       $RUNS"
 echo "  Started:    $TIMESTAMP_START"
+echo "  Client:     ${CLIENT_USER}@${CLIENT_IP}"
 echo "============================================"
 
-# --- Start background energy monitors ---
-echo "[1/5] Starting energy monitors..."
+# --- [0] Start client measurement on Machine B ---
+echo "[0/6] Starting client measurement on Machine B..."
+$SSH_CLIENT \
+    "bash ~/edge_cloud_study/client_daemon.sh start \
+     --session-id $SESSION_ID --environment edge \
+     --workload $WORKLOAD --size $SIZE --run-number $RUNS" \
+    | grep -v "^$" || true
 
-# Scaphandre (JSON output, 1-second intervals)
+# Verify Machine B measurement is running
+READY=$($SSH_CLIENT \
+    "python3 -c \"import json,os; print(json.load(open(os.path.expanduser('~/edge_cloud_study/tmp/measurement_state.json')))['status'])\"" \
+    2>/dev/null || echo "unknown")
+
+if [[ "$READY" != "running" ]]; then
+    echo "ERROR: Client measurement did not start on Machine B (status: $READY)"
+    exit 1
+fi
+echo "  Machine B client measurement running."
+
+# --- [1] Start background energy monitors (server-side on Machine A) ---
+echo "[1/6] Starting server-side energy monitors (Machine A)..."
+
 SCAPHANDRE_LOG="$LOGS_SCAPHANDRE/${SESSION_ID}_${WORKLOAD}${SIZE_SUFFIX}.json"
 scaphandre json -s 1 -f "$SCAPHANDRE_LOG" > /dev/null 2>&1 &
 SCAPHANDRE_PID=$!
 echo "  Scaphandre started (PID: $SCAPHANDRE_PID)"
 
-# PowerStat (1-second intervals, run until killed)
 POWERSTAT_LOG="$LOGS_POWERSTAT/${SESSION_ID}_${WORKLOAD}${SIZE_SUFFIX}.log"
 powerstat -R -z -d 0 1 3600 > "$POWERSTAT_LOG" 2>&1 &
 POWERSTAT_PID=$!
 echo "  PowerStat started (PID: $POWERSTAT_PID)"
 
-# Brief settle period for monitors
 sleep 2
 
-# --- Capture PowerTOP at start ---
-echo "[2/5] Capturing initial PowerTOP report..."
+# --- [2] Capture PowerTOP at start ---
+echo "[2/6] Capturing initial PowerTOP report..."
 POWERTOP_START="$LOGS_POWERTOP/${SESSION_ID}_${WORKLOAD}${SIZE_SUFFIX}_start.csv"
 powertop --csv="$POWERTOP_START" --time=3 > /dev/null 2>&1 || true
 
-# --- Run the topology workload ---
-echo "[3/5] Running topology workload ($RUNS runs)..."
-
-# Run the topology
+# --- [3] Run the topology workload ---
+echo "[3/6] Running topology workload ($RUNS runs)..."
 python3 "$TOPOLOGY_SCRIPT" \
     --workload "$WORKLOAD" \
     --size "$SIZE" \
@@ -110,43 +131,60 @@ python3 "$TOPOLOGY_SCRIPT" \
 WORKLOAD_EXIT=$?
 TIMESTAMP_END=$(date -Iseconds)
 
-# --- Stop energy monitors ---
-echo "[4/5] Stopping energy monitors..."
+# --- [4] Stop server-side energy monitors ---
+echo "[4/6] Stopping server-side energy monitors..."
 kill "$SCAPHANDRE_PID" 2>/dev/null || true
-kill "$POWERSTAT_PID" 2>/dev/null || true
+kill "$POWERSTAT_PID"  2>/dev/null || true
 wait "$SCAPHANDRE_PID" 2>/dev/null || true
-wait "$POWERSTAT_PID" 2>/dev/null || true
-echo "  Monitors stopped."
+wait "$POWERSTAT_PID"  2>/dev/null || true
+echo "  Server monitors stopped."
 
-# --- Capture final PowerTOP report ---
+# Capture final PowerTOP
 POWERTOP_END="$LOGS_POWERTOP/${SESSION_ID}_${WORKLOAD}${SIZE_SUFFIX}_end.csv"
 powertop --csv="$POWERTOP_END" --time=3 > /dev/null 2>&1 || true
 
 if [[ "$WORKLOAD_EXIT" -ne 0 ]]; then
+    # Stop Machine B even on failure
+    $SSH_CLIENT "bash ~/edge_cloud_study/client_daemon.sh stop" > /dev/null 2>&1 || true
     echo "ERROR: Topology workload exited with code $WORKLOAD_EXIT"
     exit 1
 fi
 
-# --- Parse and insert results ---
-echo "[5/5] Parsing results and inserting into database..."
+# --- [4.5] Stop client measurement on Machine B ---
+echo "[4.5/6] Stopping client measurement on Machine B..."
+CLIENT_TMP="/tmp/client_summary_${SESSION_ID}.json"
+$SSH_CLIENT "bash ~/edge_cloud_study/client_daemon.sh stop" > "$CLIENT_TMP"
+echo "  Machine B measurement stopped."
 
-# Parse energy data
+# Verify we got a valid JSON summary
+if ! python3 -c "import json; json.load(open('$CLIENT_TMP'))" 2>/dev/null; then
+    echo "WARNING: Client summary from Machine B is not valid JSON:"
+    cat "$CLIENT_TMP" >&2
+    echo '{"scaphandre_joules":0,"powerstat_joules":0,"cpu_peak_percent":0,"cpu_avg_percent":0,"duration_seconds":0,"start_time":"","stop_time":""}' > "$CLIENT_TMP"
+fi
+
+# --- [5] Parse server-side results and insert into database ---
+echo "[5/6] Parsing results and inserting into database..."
+
 TOTAL_DURATION_S=$(python3 -c "
 from datetime import datetime
 start = datetime.fromisoformat('$TIMESTAMP_START')
-end = datetime.fromisoformat('$TIMESTAMP_END')
+end   = datetime.fromisoformat('$TIMESTAMP_END')
 print((end - start).total_seconds())
 ")
 
-# Parse Scaphandre
-SCAPH_JSON=$(python3 "$UTILS_DIR/parse_scaphandre.py" "$SCAPHANDRE_LOG" --json-output 2>/dev/null || echo '{"total_joules": 0, "avg_watts": 0}')
+# Parse server-side Scaphandre
+SCAPH_JSON=$(python3 "$UTILS_DIR/parse_scaphandre.py" "$SCAPHANDRE_LOG" --json-output \
+             2>/dev/null || echo '{"total_joules": 0, "avg_watts": 0}')
 SCAPH_JOULES=$(echo "$SCAPH_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('total_joules', 0))")
 
-# Parse PowerStat
-PSTAT_JSON=$(python3 "$UTILS_DIR/parse_powerstat.py" "$POWERSTAT_LOG" --duration "$TOTAL_DURATION_S" --json-output 2>/dev/null || echo '{"total_joules": 0, "avg_watts": 0}')
+# Parse server-side PowerStat
+PSTAT_JSON=$(python3 "$UTILS_DIR/parse_powerstat.py" "$POWERSTAT_LOG" \
+             --duration "$TOTAL_DURATION_S" --json-output \
+             2>/dev/null || echo '{"total_joules": 0, "avg_watts": 0}')
 PSTAT_JOULES=$(echo "$PSTAT_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('total_joules', 0))")
 
-# Process the JSONL results and insert each run into the database
+# Process JSONL and insert edge_runs rows
 JSONL_FILE="$LOGS_IPERF3/${SESSION_ID}_${WORKLOAD}${SIZE_SUFFIX}.jsonl"
 
 if [[ ! -f "$JSONL_FILE" ]]; then
@@ -154,7 +192,6 @@ if [[ ! -f "$JSONL_FILE" ]]; then
     exit 1
 fi
 
-# Calculate per-run energy allocation
 ACTUAL_RUNS=$(wc -l < "$JSONL_FILE")
 if [[ "$ACTUAL_RUNS" -gt 0 ]]; then
     SCAPH_PER_RUN=$(python3 -c "print($SCAPH_JOULES / $ACTUAL_RUNS)")
@@ -164,10 +201,9 @@ else
     PSTAT_PER_RUN=0
 fi
 
-# Insert runs into database
+# Insert edge_runs rows
 python3 << PYEOF
-import json
-import sqlite3
+import json, sqlite3
 
 db = sqlite3.connect("$DB_PATH")
 cur = db.cursor()
@@ -205,37 +241,70 @@ with open("$JSONL_FILE") as f:
         ))
 
 db.commit()
-inserted = cur.execute("SELECT COUNT(*) FROM edge_runs WHERE session_id=?", ("$SESSION_ID",)).fetchone()[0]
+inserted = cur.execute(
+    "SELECT COUNT(*) FROM edge_runs WHERE session_id=?", ("$SESSION_ID",)
+).fetchone()[0]
 print(f"Inserted {inserted} runs into edge_runs table")
+db.close()
+PYEOF
 
-# Since Edge client and server share the identical host, we immediately duplicate
-# the aggregated server host measurements as the client measurements into client_energy_runs.
-cur.execute("SELECT SUM(data_sent_mb), SUM(duration_seconds), AVG(cpu_avg_percent) FROM edge_runs WHERE session_id=?", ("$SESSION_ID",))
-res = cur.fetchone()
+# Insert client_energy_runs from Machine B JSON summary
+python3 << PYEOF
+import json, sqlite3
+
+db = sqlite3.connect("$DB_PATH")
+cur = db.cursor()
+
+with open("$CLIENT_TMP") as f:
+    client_data = json.load(f)
+
+# Get total data_sent from edge_runs for this session
+res = cur.execute(
+    "SELECT SUM(data_sent_mb) FROM edge_runs WHERE session_id=?", ("$SESSION_ID",)
+).fetchone()
 data_sent = res[0] if res and res[0] is not None else 0.0
-duration = res[1] if res and res[1] is not None else float($TOTAL_DURATION_S)
-cpu_avg = res[2] if res and res[2] is not None else 0.0
 
 cur.execute("""
     INSERT INTO client_energy_runs (
         session_id, environment, workload_type, workload_size_mb, run_number,
         timestamp_start, timestamp_end, duration_seconds, data_sent_mb,
-        client_scaphandre_joules, client_powerstat_joules, client_cpu_peak_percent,
-        client_cpu_avg_percent, response_time_ms, notes
-    ) VALUES (?, 'edge', ?, 0, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 'derived_from_server_edge_host')
+        client_scaphandre_joules, client_powerstat_joules,
+        client_cpu_peak_percent, client_cpu_avg_percent,
+        response_time_ms, notes
+    ) VALUES (?, 'edge', ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
 """, (
-    "$SESSION_ID", "$WORKLOAD", $RUNS, "$TIMESTAMP_START", "$TIMESTAMP_END",
-    duration, data_sent, $SCAPH_JOULES, $PSTAT_JOULES, cpu_avg
+    "$SESSION_ID",
+    "$WORKLOAD",
+    $RUNS,
+    client_data.get("start_time", "$TIMESTAMP_START"),
+    client_data.get("stop_time",  "$TIMESTAMP_END"),
+    client_data.get("duration_seconds",  0.0),
+    data_sent,
+    client_data.get("scaphandre_joules", 0.0),
+    client_data.get("powerstat_joules",  0.0),
+    client_data.get("cpu_peak_percent",  0.0),
+    client_data.get("cpu_avg_percent",   0.0),
+    "machine_b_independent_measurement",
 ))
 db.commit()
-print("Populated client_energy_runs symmetrically.")
+print("Inserted client_energy_runs row from Machine B measurement.")
 db.close()
 PYEOF
 
-CLIENT_SCAPH_J=$SCAPH_JOULES
-CLIENT_PSTAT_J=$PSTAT_JOULES
+rm -f "$CLIENT_TMP"
 
-# --- Export to CSV ---
+# Extract client values for summary output
+CLIENT_SCAPH_J=$(sqlite3 "$DB_PATH" \
+    "SELECT client_scaphandre_joules FROM client_energy_runs \
+     WHERE session_id='$SESSION_ID' AND environment='edge' \
+     ORDER BY run_id DESC LIMIT 1;")
+CLIENT_PSTAT_J=$(sqlite3 "$DB_PATH" \
+    "SELECT client_powerstat_joules FROM client_energy_runs \
+     WHERE session_id='$SESSION_ID' AND environment='edge' \
+     ORDER BY run_id DESC LIMIT 1;")
+
+# --- [6] Export to CSV ---
+echo "[6/6] Exporting CSVs..."
 CSV_FILE="$EXPORTS_DIR/${SESSION_ID}_edge.csv"
 sqlite3 -header -csv "$DB_PATH" \
     "SELECT * FROM edge_runs WHERE session_id='$SESSION_ID';" > "$CSV_FILE"
@@ -255,17 +324,15 @@ echo "  Session:          $SESSION_ID"
 echo "  Workload:         $WORKLOAD ($SIZE)"
 echo "  Runs completed:   $ACTUAL_RUNS / $RUNS"
 echo "  Total duration:   ${TOTAL_DURATION_S}s"
-echo "  Server Edge Energy (1000 runs):"
+echo "  Server Edge Energy (Machine A):"
 echo "    Scaphandre total: ${SCAPH_JOULES} J"
 echo "    PowerStat total:  ${PSTAT_JOULES} J"
 echo "    Per-run (~):      ${SCAPH_PER_RUN} J (Scaphandre)"
 echo "    Per-run (~):      ${PSTAT_PER_RUN} J (PowerStat)"
-echo "  Client Edge Energy (TOTAL session):"
+echo "  Client Edge Energy (Machine B — independent):"
 echo "    Scaphandre total: ${CLIENT_SCAPH_J} J"
 echo "    PowerStat total:  ${CLIENT_PSTAT_J} J"
 echo "  JSONL:            $JSONL_FILE"
 echo "  Server CSV:       $CSV_FILE"
 echo "  Client CSV:       $CLIENT_CSV_FILE"
-echo "  JSONL:            $JSONL_FILE"
-echo "  CSV:              $CSV_FILE"
 echo "============================================"

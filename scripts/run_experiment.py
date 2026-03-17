@@ -129,9 +129,49 @@ def parse_args():
     return parser.parse_args()
 
 
+def check_machine_b(mem):
+    """Verify Machine B is reachable via SSH. Returns True if OK."""
+    env = mem.get("environment", {})
+    client_ip   = env.get("client_machine_ip")
+    client_user = env.get("client_machine_user")
+    ssh_key     = env.get("client_machine_ssh_key")
+
+    if not client_ip:
+        print("WARNING: client_machine_ip not set in AGENT_MEMORY.json.")
+        print("  Run scripts/utils/setup_client_machine.sh first.")
+        return False
+
+    print(f"\n  Pre-flight: checking Machine B ({client_user}@{client_ip})...")
+    try:
+        result = subprocess.run(
+            f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 "
+            f"-i {ssh_key} {client_user}@{client_ip} 'echo OK'",
+            shell=True, capture_output=True, text=True, timeout=12
+        )
+        if "OK" in result.stdout:
+            print("  Machine B reachable. ✓")
+            return True
+        else:
+            print(f"  Machine B did not respond (stdout: {result.stdout.strip()!r})")
+            return False
+    except subprocess.TimeoutExpired:
+        print("  Machine B SSH timed out.")
+        return False
+
+
 def main():
     args = parse_args()
     mem = load_memory()
+
+    # --- Machine B pre-flight check ---
+    if not check_machine_b(mem):
+        print("\nWARNING: Machine B not reachable. Client measurements will not be")
+        print(f"  symmetric. Check SSH: ssh -i "
+              f"{mem.get('environment',{}).get('client_machine_ssh_key','')} "
+              f"{mem.get('environment',{}).get('client_machine_user','')}@"
+              f"{mem.get('environment',{}).get('client_machine_ip','<ip>')}")
+        if not confirm("Continue without Machine B?"):
+            sys.exit(1)
 
     print("=" * 60)
     print("  Cloud vs Edge Energy Trade-off Study")

@@ -1,7 +1,7 @@
 {
   "project": "Cloud vs Edge Energy Trade-off Study",
-  "last_updated": "2026-03-17T10:21:48.935530",
-  "phase": "Ready for full experiment runs \u2014 dual measurement active",
+  "last_updated": "2026-03-17T18:52:03.787459",
+  "phase": "Experiment runs in progress",
   "completed_steps": [
     "0.1 Create directory tree",
     "0.2 Initialize AGENT_MEMORY.json",
@@ -39,11 +39,21 @@
     "4.2 GCP Python client libraries installed",
     "4.3 GCP e2-micro instance provisioned",
     "DB.1 client_energy_runs and client_energy_baselines tables created",
-    "8. Integrate client-side energy measurement (measure_client_energy.py, baseline capture, and DB updates)"
+    "8. Integrate client-side energy measurement (measure_client_energy.py, baseline capture, and DB updates)",
+    "9.0 Machine B (192.168.1.105) added as dedicated client \u2014 Step 1 complete",
+    "9.2 setup_client_machine.sh written \u2014 Step 2 complete",
+    "9.3 client_daemon.sh written (start/stop/baseline) \u2014 Step 3 complete",
+    "9.4 capture_client_baseline.sh rewritten to SSH Machine B \u2014 Step 4 complete",
+    "9.5 run_workload.sh updated: Machine B client measurement, FIFO removed \u2014 Step 5 complete",
+    "9.6 run_cloud_workload.sh updated: iperf3/HTTP from Machine B, FIFO removed \u2014 Step 6 complete",
+    "9.7 run_experiment.py updated: Machine B pre-flight check added \u2014 Step 7 complete",
+    "9.8 validate_pipeline.py updated: Machine B checks added, FIFO checks removed \u2014 Step 8 complete",
+    "9.1 Machine B setup complete \u2014 tools installed, scripts copied, sudoers configured"
   ],
   "pending_steps": [
-    "Run setup_gcp_instance.sh to provision GCP e2-micro",
-    "Confirm GCP instance ready before starting 1000-run batches"
+    "Run bash scripts/utils/setup_client_machine.sh from Machine A to prepare Machine B",
+    "Verify Machine B reachable (ssh -i /home/dem/.ssh/edge-cloud-key dem@192.168.1.105)",
+    "Run 3-iteration end-to-end test (edge + cloud file_transfer_small) to confirm non-zero symmetric client energies"
   ],
   "failed_steps": [],
   "environment": {
@@ -67,7 +77,13 @@
     "gcp_instance_type": "e2-micro",
     "gcp_carbon_api_enabled": true,
     "gcp_credentials_configured": true,
-    "gcp_sdk_installed": true
+    "gcp_sdk_installed": true,
+    "client_machine_ip": "192.168.1.105",
+    "client_machine_user": "dem",
+    "client_machine_ssh_key": "/home/dem/.ssh/edge-cloud-key",
+    "client_machine_ready": true,
+    "client_machine_tools_installed": true,
+    "client_machine_rapl_available": true
   },
   "experiment": {
     "workloads_completed": [
@@ -81,13 +97,14 @@
       "database_query",
       "web_request"
     ],
-    "total_runs_completed": 13,
+    "total_runs_completed": 33,
     "total_runs_target": 1000,
-    "last_run_id": "test_100_runs",
+    "last_run_id": "exp_edge_ft_small_001",
     "sessions_awaiting_gcp_data": [
       "test_gcp_001",
       "test_run_001",
-      "test_100_runs"
+      "test_100_runs",
+      "exp_edge_ft_small_001"
     ],
     "sessions_with_gcp_data": []
   },
@@ -115,6 +132,13 @@
     "Pipeline validation at 2026-03-16T10:39:45.729482: 53/53 passed, 0 failed",
     "Pipeline validation at 2026-03-17T10:21:48.935520: 66/66 passed, 0 failed",
     "Client-side Dual Measurement: Captured on the local Ubuntu host concurrently with edge and cloud workloads using measure_client_energy.py to compute symmetric comparisons immediately after runs.",
-    "Cloud Client Energy Fix: Resolved 0J issue in cloud runs by adding surgical sudo to measure_client_energy.py and fixing FIFO cross-user signaling. Verified with session cloud_verify_002."
+    "Cloud Client Energy Fix: Resolved 0J issue in cloud runs by adding surgical sudo to measure_client_energy.py and fixing FIFO cross-user signaling. Verified with session cloud_verify_002.",
+    "Client measurement migrated to dedicated Machine B (192.168.1.105) on 2026-03-17. All client energy readings now come from an independent physical machine, eliminating measurement taint from edge server overhead. Edge and cloud client measurements are now fully symmetric.",
+    "Cloud workload traffic now originates from Machine B directly (iperf3 client, HTTP requests). Machine A handles topology, server-side Scaphandre/PowerStat, GCP metric polling, and database insertion only. FIFO-based measure_client_energy.py subprocess removed from both run_workload.sh and run_cloud_workload.sh.",
+    "client_daemon.sh on Machine B accepts start/stop/baseline commands. stop command prints JSON summary to stdout; Machine A bash scripts parse and insert into client_energy_runs. DB never touched from Machine B.",
+    "video_encoding and db_query workloads still execute on GCP server via SSH from Machine A. Machine B measures its own energy during the wait \u2014 records idle/overhead energy for those workload types. Noted in notes field of client_energy_runs rows.",
+    "Pipeline validation at 2026-03-17T17:28:27.366511: 81/88 passed, 7 failed",
+    "Pipeline validation at 2026-03-17T17:38:43.721911: 83/88 passed, 5 failed",
+    "Pipeline validation at 2026-03-17T17:59:58.042697: 88/88 passed, 0 failed"
   ]
 }

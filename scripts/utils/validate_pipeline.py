@@ -225,67 +225,133 @@ def main():
         print("\n--- Cloud Readiness ---")
         v.add("Cloud scripts exist",
                all(os.path.isfile(os.path.join(PROJECT_DIR, f"scripts/cloud/{s}"))
-                   for s in ["setup_gcp_instance.sh", "run_cloud_workload.sh", "fetch_gcp_energy.py", "teardown_gcp_instance.sh"]))
-        # Note: actual cloud API check requires auth, verify gcloud is configured
+                   for s in ["setup_gcp_instance.sh", "run_cloud_workload.sh",
+                              "fetch_gcp_energy.py", "teardown_gcp_instance.sh"]))
         rc, _, _ = run_cmd("gcloud config get-value project")
         v.add("GCP project configured", rc == 0)
 
-        # Single-Instance Lifecycle Checks
-        print("\n--- Single-Instance Lifecycle Checks ---")
-        
-        with open(os.path.join(PROJECT_DIR, "scripts/cloud/teardown_gcp_instance.sh")) as f:
-            td = f.read()
-            v.add("teardown checks workloads_pending", "workloads_pending" in td)
-            v.add("teardown has --force flag", "--force" in td)
-            
         with open(os.path.join(PROJECT_DIR, "scripts/cloud/run_cloud_workload.sh")) as f:
-            rcw = f.read()
-            v.add("run_cloud_workload DOES NOT teardown", "teardown_gcp_instance.sh" not in rcw)
-            v.add("run_cloud_workload restarts iperf3", "pkill iperf3" in rcw)
-            v.add("run_cloud_workload logs boundaries", "workload_boundaries.log" in rcw)
+            rcw_tmp = f.read()
+            v.add("run_cloud_workload DOES NOT teardown",
+                  "teardown_gcp_instance.sh" not in rcw_tmp)
 
-        with open(os.path.join(PROJECT_DIR, "scripts/run_experiment.py")) as f:
-            re = f.read()
-            v.add("run_experiment checks instance null at start", "cloud_droplet_ready" in re and "No GCP instance is running" in re)
-            v.add("run_experiment summary block present", "ALL WORKLOAD BATCHES COMPLETE" in re)
+    # === CHECK 13: Machine B (dedicated client) integration ===
+    print("\n--- Machine B Dedicated Client ---")
 
-        with open(os.path.join(PROJECT_DIR, "scripts/cloud/fetch_gcp_energy.py")) as f:
-            fge = f.read()
-            v.add("fetch_gcp_energy has proportional logic", "share_percent" in fge)
+    # Read Machine B config from AGENT_MEMORY.json
+    try:
+        with open(MEMORY_FILE) as f:
+            mem_b = json.load(f)
+        env_b       = mem_b.get("environment", {})
+        client_ip   = env_b.get("client_machine_ip", "")
+        client_user = env_b.get("client_machine_user", "")
+        ssh_key     = env_b.get("client_machine_ssh_key", "")
+        v.add("AGENT_MEMORY has client_machine_ip",    bool(client_ip))
+        v.add("AGENT_MEMORY client_machine_ready",     env_b.get("client_machine_ready", False))
+    except Exception as e:
+        v.add("AGENT_MEMORY has client_machine_ip", False, str(e))
+        v.add("AGENT_MEMORY client_machine_ready",  False, str(e))
+        client_ip = client_user = ssh_key = ""
 
-        cur.execute("PRAGMA table_info(cloud_reported_energy)")
-        cols = [r[1] for r in cur.fetchall()]
-        v.add("cloud_reported_energy has attribution_method", "attribution_method" in cols)
+    # SSH reachability
+    if client_ip and ssh_key:
+        rc, out, _ = run_cmd(
+            f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 "
+            f"-i {ssh_key} {client_user}@{client_ip} 'echo OK'",
+            timeout=15
+        )
+        machine_b_up = rc == 0 and "OK" in out
+        v.add("Machine B reachable via SSH", machine_b_up,
+              f"{client_user}@{client_ip}" if machine_b_up else "SSH failed")
+    else:
+        machine_b_up = False
+        v.add("Machine B reachable via SSH", False, "client_machine_ip/ssh_key not configured")
 
-    # === CHECK 13: Client-side integration ===
-    print("\n--- Client-side Energy Integration ---")
-    
-    with open(os.path.join(PROJECT_DIR, "scripts/utils/measure_client_energy.py")) as f:
-        mce = f.read()
-        v.add("measure_client_energy handles STOP signal", "STOP" in mce and "sys.stdin" in mce)
-        v.add("measure_client_energy handles MEASUREMENT_STARTED", "MEASUREMENT_STARTED" in mce)
+    # Required files on Machine B
+    if machine_b_up:
+        for fname in ["client_daemon.sh", "measure_client_energy.py",
+                      "parse_scaphandre.py", "parse_powerstat.py"]:
+            rc, out, _ = run_cmd(
+                f"ssh -o StrictHostKeyChecking=no -i {ssh_key} "
+                f"{client_user}@{client_ip} "
+                f"'test -f ~/edge_cloud_study/{fname} && echo OK'",
+                timeout=10
+            )
+            v.add(f"Machine B has {fname}", rc == 0 and "OK" in out)
+
+        # Measurement tool available on Machine B
+        rc, out, _ = run_cmd(
+            f"ssh -o StrictHostKeyChecking=no -i {ssh_key} "
+            f"{client_user}@{client_ip} "
+            f"'scaphandre --version 2>/dev/null || powerstat -h 2>&1 | head -1'",
+            timeout=10
+        )
+        v.add("Machine B measurement tool available", rc == 0 and bool(out.strip()))
+    else:
+        for fname in ["client_daemon.sh", "measure_client_energy.py",
+                      "parse_scaphandre.py", "parse_powerstat.py"]:
+            v.add(f"Machine B has {fname}", False, "Machine B unreachable")
+        v.add("Machine B measurement tool available", False, "Machine B unreachable")
+
+    # Script-level checks: FIFO removed, SSH pattern present
+    print("\n--- Client-side Script Checks ---")
 
     with open(os.path.join(PROJECT_DIR, "scripts/edge/run_workload.sh")) as f:
         rw = f.read()
-        v.add("run_workload calls measure_client_energy edge", "measure_client_energy.py" in rw and "--environment \"edge\"" in rw)
+        v.add("run_workload.sh no FIFO references",
+              "mkfifo" not in rw and "FIFO_IN" not in rw)
+        v.add("run_workload.sh uses client_daemon.sh start",
+              "client_daemon.sh start" in rw)
+        v.add("run_workload.sh uses client_daemon.sh stop",
+              "client_daemon.sh stop" in rw)
 
     if not args.skip_cloud:
         with open(os.path.join(PROJECT_DIR, "scripts/cloud/run_cloud_workload.sh")) as f:
             rcw = f.read()
-            v.add("run_cloud_workload calls measure_client_energy cloud", "measure_client_energy.py" in rcw and "--environment \"cloud\"" in rcw)
-            
+            v.add("run_cloud_workload.sh no FIFO references",
+                  "mkfifo" not in rcw and "FIFO_IN" not in rcw)
+            v.add("run_cloud_workload iperf3 from Machine B via SSH",
+                  "CLIENT_IP" in rcw and "iperf3" in rcw and "SSH_CLIENT" in rcw)
+            v.add("run_cloud_workload.sh restarts iperf3", "pkill iperf3" in rcw)
+            v.add("run_cloud_workload.sh logs boundaries", "workload_boundaries.log" in rcw)
+
     with open(os.path.join(PROJECT_DIR, "scripts/analysis/compare_client_energy.py")) as f:
         cce = f.read()
-        v.add("compare_client_energy queries both envs", "edge" in cce and "cloud" in cce and "client_energy_runs" in cce)
-        
+        v.add("compare_client_energy queries both envs",
+              "edge" in cce and "cloud" in cce and "client_energy_runs" in cce)
+
     with open(os.path.join(PROJECT_DIR, "scripts/run_experiment.py")) as f:
-        re = f.read()
-        v.add("run_experiment calls capture_client_baseline", "capture_client_baseline.sh" in re)
-        v.add("run_experiment calls compare_client_energy", "compare_client_energy.py" in re)
+        re_src = f.read()
+        v.add("run_experiment calls capture_client_baseline", "capture_client_baseline.sh" in re_src)
+        v.add("run_experiment calls compare_client_energy",   "compare_client_energy.py"   in re_src)
+        v.add("run_experiment has Machine B pre-flight check","check_machine_b"             in re_src)
 
     with open(os.path.join(PROJECT_DIR, "scripts/cloud/fetch_gcp_energy.py")) as f:
         fge = f.read()
         v.add("fetch_gcp_energy appends GCP data", "df['Cloud_Server_GCP']" in fge)
+
+    # Single-instance lifecycle checks (previously in cloud section, kept here)
+    if not args.skip_cloud:
+        print("\n--- Single-Instance Lifecycle Checks ---")
+        with open(os.path.join(PROJECT_DIR, "scripts/cloud/teardown_gcp_instance.sh")) as f:
+            td = f.read()
+            v.add("teardown checks workloads_pending", "workloads_pending" in td)
+            v.add("teardown has --force flag",         "--force" in td)
+
+        with open(os.path.join(PROJECT_DIR, "scripts/run_experiment.py")) as f:
+            re_src2 = f.read()
+            v.add("run_experiment checks instance null at start",
+                  "cloud_droplet_ready" in re_src2 and "No GCP instance is running" in re_src2)
+            v.add("run_experiment summary block present",
+                  "ALL WORKLOAD BATCHES COMPLETE" in re_src2)
+
+        with open(os.path.join(PROJECT_DIR, "scripts/cloud/fetch_gcp_energy.py")) as f:
+            fge2 = f.read()
+            v.add("fetch_gcp_energy has proportional logic", "share_percent" in fge2)
+
+        cur.execute("PRAGMA table_info(cloud_reported_energy)")
+        cols = [r[1] for r in cur.fetchall()]
+        v.add("cloud_reported_energy has attribution_method", "attribution_method" in cols)
 
     # === FINAL SUMMARY ===
     total, passed, failed = v.summary()
