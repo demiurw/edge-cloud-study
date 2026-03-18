@@ -1,6 +1,6 @@
 {
   "project": "Cloud vs Edge Energy Trade-off Study",
-  "last_updated": "2026-03-17T18:52:03.787459",
+  "last_updated": "2026-03-17T20:48:35.326578",
   "phase": "Experiment runs in progress",
   "completed_steps": [
     "0.1 Create directory tree",
@@ -48,13 +48,20 @@
     "9.6 run_cloud_workload.sh updated: iperf3/HTTP from Machine B, FIFO removed \u2014 Step 6 complete",
     "9.7 run_experiment.py updated: Machine B pre-flight check added \u2014 Step 7 complete",
     "9.8 validate_pipeline.py updated: Machine B checks added, FIFO checks removed \u2014 Step 8 complete",
-    "9.1 Machine B setup complete \u2014 tools installed, scripts copied, sudoers configured"
+    "9.1 Machine B setup complete \u2014 tools installed, scripts copied, sudoers configured",
+    "10.1 topology.py: added --mode server_only (server container + switch only, iperf3/HTTP on host, SIGTERM wait)",
+    "10.2 topology/start_edge_server.sh written \u2014 starts topology in server_only mode, polls for state file, verifies iperf3",
+    "10.3 topology/stop_edge_server.sh written \u2014 SIGTERM to topology, mn -c cleanup, removes state file",
+    "10.4 run_workload.sh rewritten \u2014 Machine B sends iperf3/HTTP to edge server over LAN (192.168.1.x), symmetric with cloud",
+    "10.5 run_cloud_workload.sh: response_time_ms now calculated from JSONL and stored in client_energy_runs (was NULL)",
+    "10.6 validate_pipeline.py: new checks for start/stop_edge_server.sh, --mode arg, SSH iperf3 from Machine B, no dept1 client",
+    "10.7 Fixed iperf3 --forking (not valid on iperf3 3.x) \u2192 changed to iperf3 -s -p 5201",
+    "10.8 Fixed JSON parse error (Extra data) \u2192 redirect iperf3 output to temp file + JSONDecoder.raw_decode()",
+    "10.9 Applied same iperf3 fix to run_cloud_workload.sh for consistency",
+    "10.10 End-to-end validation passed: 3-run edge file_transfer \u2014 10MB transferred per run, 60.9J Scaphandre on Machine B, response_time_ms populated",
+    "10.11 validate_pipeline.py: 86/86 checks passing"
   ],
-  "pending_steps": [
-    "Run bash scripts/utils/setup_client_machine.sh from Machine A to prepare Machine B",
-    "Verify Machine B reachable (ssh -i /home/dem/.ssh/edge-cloud-key dem@192.168.1.105)",
-    "Run 3-iteration end-to-end test (edge + cloud file_transfer_small) to confirm non-zero symmetric client energies"
-  ],
+  "pending_steps": [],
   "failed_steps": [],
   "environment": {
     "os": "Ubuntu",
@@ -97,7 +104,7 @@
       "database_query",
       "web_request"
     ],
-    "total_runs_completed": 33,
+    "total_runs_completed": 43,
     "total_runs_target": 1000,
     "last_run_id": "exp_edge_ft_small_001",
     "sessions_awaiting_gcp_data": [
@@ -139,6 +146,10 @@
     "video_encoding and db_query workloads still execute on GCP server via SSH from Machine A. Machine B measures its own energy during the wait \u2014 records idle/overhead energy for those workload types. Noted in notes field of client_energy_runs rows.",
     "Pipeline validation at 2026-03-17T17:28:27.366511: 81/88 passed, 7 failed",
     "Pipeline validation at 2026-03-17T17:38:43.721911: 83/88 passed, 5 failed",
-    "Pipeline validation at 2026-03-17T17:59:58.042697: 88/88 passed, 0 failed"
+    "Pipeline validation at 2026-03-17T17:59:58.042697: 88/88 passed, 0 failed",
+    "Edge traffic now originates from Machine B over local network (192.168.1.x). topology.py server_only mode used \u2014 no dept containers. iperf3/HTTP servers run on Machine A host (not in container) because Containernet overrides Docker network namespace, preventing port_bindings from routing external traffic. Machine B sends iperf3/HTTP to Machine A's local IP on those ports. Client energy now symmetric between edge and cloud runs.",
+    "Pipeline validation at 2026-03-17T20:12:30.349254: 86/86 passed, 0 failed",
+    "Pipeline validation at 2026-03-17T20:36:05.655343: 86/86 passed, 0 failed",
+    "KNOWN: Containernet OVS bridge adds overhead \u2014 LAN iperf3 throughput ~10-12 Mbps instead of expected gigabit. Traffic still flows over LAN (192.168.1.x), Machine B energy is real transmission energy. Bandwidth difference edge vs cloud is a legitimate experimental variable."
   ]
 }

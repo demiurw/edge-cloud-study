@@ -157,8 +157,8 @@ def main():
     v.add("Docker image: edgecloud-workload", rc == 0 and "edgecloud-workload" in out,
           out.strip()[:50] if out else "NOT FOUND")
 
-    # === CHECK 8: Topology test (3 runs) ===
-    print("\n--- Topology Validation (3 runs) ---")
+    # === CHECK 8: Topology test (3 runs, full mode) ===
+    print("\n--- Topology Validation (3 runs, full mode) ---")
     print("  Running topology test... (this may take 1-2 minutes)")
     run_cmd("sudo mn -c 2>/dev/null", timeout=30)
 
@@ -167,7 +167,7 @@ def main():
         f"--runs 3 --session-id {VALIDATION_SESSION}",
         timeout=300
     )
-    v.add("Topology runs successfully", rc == 0,
+    v.add("Topology full mode runs successfully", rc == 0,
           f"exit code {rc}" if rc != 0 else "3 runs completed")
 
     # Check JSONL output
@@ -177,7 +177,6 @@ def main():
             lines = f.readlines()
         v.add("JSONL output created", len(lines) == 3, f"{len(lines)} entries")
 
-        # Verify entries are valid JSON with no errors
         valid_runs = 0
         for line in lines:
             try:
@@ -192,6 +191,26 @@ def main():
         v.add("All runs parsed successfully", False, "No data")
 
     run_cmd("sudo mn -c 2>/dev/null", timeout=30)
+
+    # === CHECK 8b: topology.py --mode argument ===
+    print("\n--- Topology server_only Mode ---")
+    rc, out, err = run_cmd(
+        f"python3 {TOPOLOGY_SCRIPT} --help", timeout=10
+    )
+    v.add("topology.py accepts --mode argument", rc == 0 and "--mode" in out,
+          "--mode found in --help" if "--mode" in out else "--mode NOT in --help")
+
+    # Check start/stop scripts exist and are executable
+    start_sh = os.path.join(PROJECT_DIR, "topology", "start_edge_server.sh")
+    stop_sh  = os.path.join(PROJECT_DIR, "topology", "stop_edge_server.sh")
+    v.add("topology/start_edge_server.sh exists",
+          os.path.isfile(start_sh))
+    v.add("topology/start_edge_server.sh is executable",
+          os.access(start_sh, os.X_OK))
+    v.add("topology/stop_edge_server.sh exists",
+          os.path.isfile(stop_sh))
+    v.add("topology/stop_edge_server.sh is executable",
+          os.access(stop_sh, os.X_OK))
 
     # === CHECK 9: Parser utilities ===
     print("\n--- Parser Utilities ---")
@@ -293,7 +312,7 @@ def main():
             v.add(f"Machine B has {fname}", False, "Machine B unreachable")
         v.add("Machine B measurement tool available", False, "Machine B unreachable")
 
-    # Script-level checks: FIFO removed, SSH pattern present
+    # Script-level checks: FIFO removed, SSH pattern present, new edge flow
     print("\n--- Client-side Script Checks ---")
 
     with open(os.path.join(PROJECT_DIR, "scripts/edge/run_workload.sh")) as f:
@@ -304,6 +323,41 @@ def main():
               "client_daemon.sh start" in rw)
         v.add("run_workload.sh uses client_daemon.sh stop",
               "client_daemon.sh stop" in rw)
+        v.add("run_workload.sh calls start_edge_server.sh",
+              "start_edge_server.sh" in rw)
+        v.add("run_workload.sh calls stop_edge_server.sh",
+              "stop_edge_server.sh" in rw)
+        v.add("run_workload.sh iperf3 from Machine B via SSH",
+              "SSH_CLIENT" in rw and "iperf3" in rw and "EDGE_SERVER_IP" in rw)
+        v.add("run_workload.sh no dept1 container client",
+              "dept1" not in rw and "python3 \"$TOPOLOGY_SCRIPT\"" not in rw)
+
+    # Verify setup_client_machine.sh is valid bash (not JSON error)
+    setup_sh = os.path.join(PROJECT_DIR, "scripts/utils/setup_client_machine.sh")
+    if os.path.isfile(setup_sh):
+        with open(setup_sh) as f:
+            setup_content = f.read()
+        is_bash = setup_content.startswith("#!/bin/bash") or "#!/bin/bash" in setup_content[:20]
+        is_json_error = '"message"' in setup_content[:100] and "Bad credentials" in setup_content
+        v.add("setup_client_machine.sh is valid bash (not JSON error)",
+              is_bash and not is_json_error,
+              "Valid bash script" if (is_bash and not is_json_error) else "Contains JSON error or not bash")
+    else:
+        v.add("setup_client_machine.sh is valid bash (not JSON error)",
+              False, "File not found")
+
+    # Verify iperf3 on Machine B
+    if machine_b_up:
+        rc, out, _ = run_cmd(
+            f"ssh -o StrictHostKeyChecking=no -i {ssh_key} "
+            f"{client_user}@{client_ip} 'which iperf3'",
+            timeout=10
+        )
+        v.add("Machine B has iperf3 installed",
+              rc == 0 and "iperf3" in out,
+              out.strip() if rc == 0 else "iperf3 not found")
+    else:
+        v.add("Machine B has iperf3 installed", False, "Machine B unreachable")
 
     if not args.skip_cloud:
         with open(os.path.join(PROJECT_DIR, "scripts/cloud/run_cloud_workload.sh")) as f:

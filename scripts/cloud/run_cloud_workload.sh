@@ -181,45 +181,53 @@ for run_num in $(seq 1 "$RUNS"); do
 
     if [[ "$WORKLOAD" == "file_transfer" ]]; then
         SIZE_BYTES=${FILE_SIZES[$SIZE]}
-        # iperf3 client runs FROM Machine B to GCP instance
-        RESULT=$($SSH_CLIENT "iperf3 -c $INSTANCE_IP -n $SIZE_BYTES -J" 2>&1 || echo '{}')
+        # iperf3 client runs FROM Machine B to GCP instance.
+        # Redirect to temp file — avoids bash quoting issues and trailing
+        # "iperf Done." lines that break json.loads().
+        IPERF3_TMP="/tmp/iperf3_cloud_${SESSION_ID}_${run_num}.json"
+        $SSH_CLIENT "iperf3 -c $INSTANCE_IP -n $SIZE_BYTES -J 2>/dev/null" \
+            > "$IPERF3_TMP" || echo '{}' > "$IPERF3_TMP"
         END_MS=$(date +%s%N | cut -b1-13)
         TIMESTAMP_END=$(date -Iseconds)
 
-        python3 -c "
-import json, sys
+        python3 << PYEOF >> "$CLOUD_LOG"
+import json
 try:
-    data = json.loads('''$RESULT''')
-    sent  = data.get('end', {}).get('sum_sent', {})
-    duration   = sent.get('seconds', 0)
-    bytes_sent = sent.get('bytes', 0)
-    bps        = sent.get('bits_per_second', 0)
-    cpu        = data.get('end', {}).get('cpu_utilization_percent', {}).get('host_total', 0)
+    with open("$IPERF3_TMP") as f:
+        content = f.read().strip()
+    decoder = json.JSONDecoder()
+    data, _ = decoder.raw_decode(content)
+    sent       = data.get("end", {}).get("sum_sent", {})
+    duration   = sent.get("seconds", 0)
+    bytes_sent = sent.get("bytes", 0)
+    bps        = sent.get("bits_per_second", 0)
+    cpu        = data.get("end", {}).get("cpu_utilization_percent", {}).get("host_total", 0)
     entry = {
-        'run_number':       $run_num,
-        'session_id':       '$SESSION_ID',
-        'workload_type':    'file_transfer',
-        'workload_size_mb': $SIZE_BYTES / (1024*1024),
-        'timestamp_start':  '$TIMESTAMP_START',
-        'timestamp_end':    '$TIMESTAMP_END',
-        'duration_seconds': duration,
-        'data_sent_mb':     bytes_sent / (1024*1024),
-        'bandwidth_out_mb': bps / (8*1024*1024),
-        'response_time_ms': ($END_MS - $START_MS),
-        'cpu_avg_percent':  cpu,
-        'request_count':    1,
+        "run_number":       $run_num,
+        "session_id":       "$SESSION_ID",
+        "workload_type":    "file_transfer",
+        "workload_size_mb": $SIZE_BYTES / (1024*1024),
+        "timestamp_start":  "$TIMESTAMP_START",
+        "timestamp_end":    "$TIMESTAMP_END",
+        "duration_seconds": duration,
+        "data_sent_mb":     bytes_sent / (1024*1024),
+        "bandwidth_out_mb": bps / (8*1024*1024),
+        "response_time_ms": ($END_MS - $START_MS),
+        "cpu_avg_percent":  cpu,
+        "request_count":    1,
     }
-except Exception:
+except Exception as e:
     entry = {
-        'run_number':      $run_num,
-        'session_id':      '$SESSION_ID',
-        'workload_type':   'file_transfer',
-        'error':           'parse_failed',
-        'timestamp_start': '$TIMESTAMP_START',
-        'timestamp_end':   '$TIMESTAMP_END',
+        "run_number":      $run_num,
+        "session_id":      "$SESSION_ID",
+        "workload_type":   "file_transfer",
+        "error":           "parse_failed: " + str(e),
+        "timestamp_start": "$TIMESTAMP_START",
+        "timestamp_end":   "$TIMESTAMP_END",
     }
 print(json.dumps(entry))
-" >> "$CLOUD_LOG"
+PYEOF
+        rm -f "$IPERF3_TMP"
 
     elif [[ "$WORKLOAD" == "web_request" ]]; then
         # HTTP requests originate FROM Machine B to GCP
@@ -373,6 +381,18 @@ print(f"Inserted {count} cloud runs into database")
 db.close()
 PYEOF
 
+# Calculate average response_time_ms from cloud JSONL
+AVG_RESPONSE_MS=$(python3 -c "
+import json
+times = []
+with open('$CLOUD_LOG') as f:
+    for line in f:
+        r = json.loads(line.strip())
+        if 'error' not in r and r.get('response_time_ms', 0) > 0:
+            times.append(r['response_time_ms'])
+print(sum(times)/len(times) if times else 0)
+")
+
 # --- Insert client_energy_runs from Machine B JSON summary ---
 echo "Inserting client_energy_runs (Machine B) into database..."
 python3 << PYEOF
@@ -396,7 +416,7 @@ cur.execute("""
         client_scaphandre_joules, client_powerstat_joules,
         client_cpu_peak_percent, client_cpu_avg_percent,
         response_time_ms, notes
-    ) VALUES (?, 'cloud', ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+    ) VALUES (?, 'cloud', ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """, (
     "$SESSION_ID",
     "$WORKLOAD",
@@ -409,7 +429,8 @@ cur.execute("""
     client_data.get("powerstat_joules",  0.0),
     client_data.get("cpu_peak_percent",  0.0),
     client_data.get("cpu_avg_percent",   0.0),
-    "machine_b_independent_measurement",
+    $AVG_RESPONSE_MS,
+    "machine_b_over_wan_to_gcp_server",
 ))
 db.commit()
 print("Inserted client_energy_runs row from Machine B measurement.")
