@@ -97,27 +97,8 @@ echo "  Started:    $TIMESTAMP_START"
 echo "  Client:     ${CLIENT_USER}@${CLIENT_IP} (Machine B)"
 echo "============================================"
 
-# --- [0] Start client measurement on Machine B ---
-echo "[0/7] Starting client measurement on Machine B..."
-$SSH_CLIENT \
-    "bash ~/edge_cloud_study/client_daemon.sh start \
-     --session-id $SESSION_ID --environment edge \
-     --workload $WORKLOAD --size $SIZE --run-number $RUNS" \
-    | grep -v "^$" || true
-
-# Verify Machine B measurement is running
-READY=$($SSH_CLIENT \
-    "python3 -c \"import json,os; print(json.load(open(os.path.expanduser('~/edge_cloud_study/tmp/measurement_state.json')))['status'])\"" \
-    2>/dev/null || echo "unknown")
-
-if [[ "$READY" != "running" ]]; then
-    echo "ERROR: Client measurement did not start on Machine B (status: $READY)"
-    exit 1
-fi
-echo "  Machine B client measurement running."
-
 # --- [1] Start background energy monitors (server-side on Machine A) ---
-echo "[1/7] Starting server-side energy monitors (Machine A)..."
+echo "[1/9] Starting server-side energy monitors (Machine A)..."
 
 SCAPHANDRE_LOG="$LOGS_SCAPHANDRE/${SESSION_ID}_${WORKLOAD}${SIZE_SUFFIX}.json"
 scaphandre json -s 1 -f "$SCAPHANDRE_LOG" > /dev/null 2>&1 &
@@ -131,13 +112,12 @@ echo "  PowerStat started (PID: $POWERSTAT_PID)"
 
 sleep 2
 
-# --- [2] Capture PowerTOP at start ---
-echo "[2/7] Capturing initial PowerTOP report..."
+# Capture PowerTOP at start
 POWERTOP_START="$LOGS_POWERTOP/${SESSION_ID}_${WORKLOAD}${SIZE_SUFFIX}_start.csv"
 powertop --csv="$POWERTOP_START" --time=3 > /dev/null 2>&1 || true
 
-# --- [3] Start edge server topology (server_only mode) ---
-echo "[3/7] Starting edge server topology (server_only mode)..."
+# --- [2] Start edge server topology (server_only mode) ---
+echo "[2/9] Starting edge server topology (server_only mode)..."
 START_OUTPUT=$(bash "$TOPOLOGY_DIR/start_edge_server.sh" \
     --session-id "$SESSION_ID" --workload "$WORKLOAD" 2>&1)
 echo "$START_OUTPUT"
@@ -146,15 +126,55 @@ if ! echo "$START_OUTPUT" | grep -q "EDGE_SERVER_READY"; then
     echo "ERROR: Edge server did not start correctly"
     kill "$SCAPHANDRE_PID" 2>/dev/null || true
     kill "$POWERSTAT_PID"  2>/dev/null || true
-    $SSH_CLIENT "bash ~/edge_cloud_study/client_daemon.sh stop" > /dev/null 2>&1 || true
     exit 1
 fi
 
 EDGE_SERVER_IP=$(python3 -c "import json; print(json.load(open('$STATE_FILE'))['server_ip'])")
 echo "  Edge server IP: $EDGE_SERVER_IP"
 
-# --- [4] Run workload iterations — traffic FROM Machine B ---
-echo "[4/7] Running $RUNS edge workload iterations (traffic from Machine B)..."
+# --- [3] Verify Machine B can reach edge server ---
+echo "[3/9] Verifying Machine B can reach edge server ($EDGE_SERVER_IP)..."
+REACHABLE=$($SSH_CLIENT "iperf3 -c $EDGE_SERVER_IP -t 1 -J \
+  > /dev/null 2>&1 && echo REACHABLE || echo UNREACHABLE")
+
+if [[ "$REACHABLE" != "REACHABLE" ]]; then
+    echo "ERROR: Machine B cannot reach edge server at $EDGE_SERVER_IP"
+    bash "$TOPOLOGY_DIR/stop_edge_server.sh" > /dev/null 2>&1 || true
+    kill "$SCAPHANDRE_PID" 2>/dev/null || true
+    kill "$POWERSTAT_PID"  2>/dev/null || true
+    exit 1
+fi
+echo "  Machine B can reach edge server."
+
+# --- [4] Start client measurement on Machine B ---
+echo "[4/9] Starting client measurement on Machine B..."
+$SSH_CLIENT \
+    "bash ~/edge_cloud_study/client_daemon.sh start \
+     --session-id $SESSION_ID --environment edge \
+     --workload $WORKLOAD --size $SIZE --run-number $RUNS" \
+    | grep -v "^$" || true
+
+# Verify Machine B measurement is running
+READY=$($SSH_CLIENT \
+    "python3 -c \"import json,os; print(json.load(open(os.path.expanduser('~/edge_cloud_study/tmp/measurement_state.json')))['status'])\"" \
+    2>/dev/null || echo "unknown")
+
+if [[ "$READY" != "running" ]]; then
+    echo "ERROR: Client measurement did not start on Machine B (status: $READY)"
+    bash "$TOPOLOGY_DIR/stop_edge_server.sh" > /dev/null 2>&1 || true
+    kill "$SCAPHANDRE_PID" 2>/dev/null || true
+    kill "$POWERSTAT_PID"  2>/dev/null || true
+    exit 1
+fi
+echo "  Machine B client measurement running."
+
+# Warm-up run (not logged) — establishes TCP connection so run 1 is not an outlier
+echo "  Warm-up run (not logged)..."
+$SSH_CLIENT "iperf3 -c $EDGE_SERVER_IP -n 10485760 -J > /dev/null 2>&1" || true
+sleep 1
+
+# --- [5] Run workload iterations — traffic FROM Machine B ---
+echo "[5/9] Running $RUNS edge workload iterations (traffic from Machine B)..."
 
 > "$JSONL_FILE"
 
@@ -341,24 +361,8 @@ done
 
 TIMESTAMP_END=$(date -Iseconds)
 
-# --- [5] Stop edge server ---
-echo "[5/7] Stopping edge server topology..."
-bash "$TOPOLOGY_DIR/stop_edge_server.sh"
-
-# --- [6] Stop server-side energy monitors ---
-echo "[6/7] Stopping server-side energy monitors..."
-kill "$SCAPHANDRE_PID" 2>/dev/null || true
-kill "$POWERSTAT_PID"  2>/dev/null || true
-wait "$SCAPHANDRE_PID" 2>/dev/null || true
-wait "$POWERSTAT_PID"  2>/dev/null || true
-echo "  Server monitors stopped."
-
-# Capture final PowerTOP
-POWERTOP_END="$LOGS_POWERTOP/${SESSION_ID}_${WORKLOAD}${SIZE_SUFFIX}_end.csv"
-powertop --csv="$POWERTOP_END" --time=3 > /dev/null 2>&1 || true
-
-# --- [6.5] Stop client measurement on Machine B ---
-echo "[6.5/7] Stopping client measurement on Machine B..."
+# --- [6] Stop client measurement on Machine B ---
+echo "[6/9] Stopping client measurement on Machine B..."
 CLIENT_TMP="/tmp/client_summary_${SESSION_ID}.json"
 $SSH_CLIENT "bash ~/edge_cloud_study/client_daemon.sh stop" > "$CLIENT_TMP"
 echo "  Machine B measurement stopped."
@@ -370,8 +374,24 @@ if ! python3 -c "import json; json.load(open('$CLIENT_TMP'))" 2>/dev/null; then
     echo '{"scaphandre_joules":0,"powerstat_joules":0,"cpu_peak_percent":0,"cpu_avg_percent":0,"duration_seconds":0,"start_time":"","stop_time":""}' > "$CLIENT_TMP"
 fi
 
-# --- [7] Parse server-side results and insert into database ---
-echo "[7/7] Parsing results and inserting into database..."
+# --- [7] Stop edge server ---
+echo "[7/9] Stopping edge server topology..."
+bash "$TOPOLOGY_DIR/stop_edge_server.sh"
+
+# --- [8] Stop server-side energy monitors ---
+echo "[8/9] Stopping server-side energy monitors..."
+kill "$SCAPHANDRE_PID" 2>/dev/null || true
+kill "$POWERSTAT_PID"  2>/dev/null || true
+wait "$SCAPHANDRE_PID" 2>/dev/null || true
+wait "$POWERSTAT_PID"  2>/dev/null || true
+echo "  Server monitors stopped."
+
+# Capture final PowerTOP
+POWERTOP_END="$LOGS_POWERTOP/${SESSION_ID}_${WORKLOAD}${SIZE_SUFFIX}_end.csv"
+powertop --csv="$POWERTOP_END" --time=3 > /dev/null 2>&1 || true
+
+# --- [9] Parse server-side results and insert into database ---
+echo "[9/9] Parsing results and inserting into database..."
 
 TOTAL_DURATION_S=$(python3 -c "
 from datetime import datetime
@@ -502,7 +522,8 @@ cur.execute("""
     client_data.get("cpu_peak_percent",  0.0),
     client_data.get("cpu_avg_percent",   0.0),
     $AVG_RESPONSE_MS,
-    "machine_b_over_lan_to_edge_server",
+    "machine_b_active_client_traffic_only" if "$WORKLOAD" in ("file_transfer", "web_request")
+        else "machine_b_wait_energy_compute_on_server",
 ))
 db.commit()
 print("Inserted client_energy_runs row from Machine B measurement.")

@@ -93,6 +93,17 @@ echo "[1/4] Verifying GCP instance iperf3 server..."
 ssh -o StrictHostKeyChecking=no "ubuntu@$INSTANCE_IP" \
     "pkill iperf3 2>/dev/null; iperf3 -s -D" 2>/dev/null || true
 
+# --- [1b] Verify Machine B can reach GCP instance ---
+echo "Verifying Machine B can reach GCP instance ($INSTANCE_IP)..."
+REACHABLE=$($SSH_CLIENT "iperf3 -c $INSTANCE_IP -t 1 -J \
+  > /dev/null 2>&1 && echo REACHABLE || echo UNREACHABLE")
+
+if [[ "$REACHABLE" != "REACHABLE" ]]; then
+    echo "ERROR: Machine B cannot reach GCP instance at $INSTANCE_IP"
+    exit 1
+fi
+echo "  Machine B can reach GCP instance."
+
 # --- [2] Start client measurement on Machine B ---
 echo "[2/4] Starting client energy measurement on Machine B..."
 $SSH_CLIENT \
@@ -111,6 +122,11 @@ if [[ "$READY" != "running" ]]; then
     exit 1
 fi
 echo "  Machine B client measurement running."
+
+# Warm-up run (not logged) — establishes TCP connection so run 1 is not an outlier
+echo "  Warm-up run (not logged)..."
+$SSH_CLIENT "iperf3 -c $INSTANCE_IP -n 10485760 -J > /dev/null 2>&1" || true
+sleep 1
 
 > "$CLOUD_LOG"
 > "$GCP_LOG"
@@ -430,7 +446,8 @@ cur.execute("""
     client_data.get("cpu_peak_percent",  0.0),
     client_data.get("cpu_avg_percent",   0.0),
     $AVG_RESPONSE_MS,
-    "machine_b_over_wan_to_gcp_server",
+    "machine_b_active_client_traffic_only" if "$WORKLOAD" in ("file_transfer", "web_request")
+        else "machine_b_wait_energy_compute_on_server",
 ))
 db.commit()
 print("Inserted client_energy_runs row from Machine B measurement.")
