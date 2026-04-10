@@ -1,6 +1,6 @@
 {
   "project": "Cloud vs Edge Energy Trade-off Study",
-  "last_updated": "2026-03-17T20:48:35.326578",
+  "last_updated": "2026-04-10T00:26:12.194417",
   "phase": "Experiment runs in progress",
   "completed_steps": [
     "0.1 Create directory tree",
@@ -80,12 +80,13 @@
     "gcp_project_id": "project-8067bcb9-192a-4c85-9c5",
     "gcp_region": "us-central1",
     "gcp_instance_id": "4478506382799514660",
-    "gcp_instance_ip": "35.238.201.243",
-    "gcp_instance_type": "e2-micro",
+    "gcp_instance_ip": "34.41.147.159",
+    "gcp_instance_type": "e2-medium",
     "gcp_carbon_api_enabled": true,
     "gcp_credentials_configured": true,
     "gcp_sdk_installed": true,
-    "client_machine_ip": "192.168.1.105",
+    "machine_a_tailscale_ip": "100.103.62.127",
+    "client_machine_ip": "100.79.129.127",
     "client_machine_user": "dem",
     "client_machine_ssh_key": "/home/dem/.ssh/edge-cloud-key",
     "client_machine_ready": true,
@@ -94,26 +95,23 @@
   },
   "experiment": {
     "workloads_completed": [
-      "file_transfer"
+      "web_request"
     ],
     "workloads_pending": [
       "file_transfer_small",
       "file_transfer_medium",
       "file_transfer_large",
       "video_encoding",
-      "database_query",
-      "web_request"
+      "database_query"
     ],
-    "total_runs_completed": 43,
+    "total_runs_completed": 10,
     "total_runs_target": 1000,
-    "last_run_id": "exp_edge_ft_small_001",
+    "last_run_id": "exp_web_request_001",
     "sessions_awaiting_gcp_data": [
-      "test_gcp_001",
-      "test_run_001",
-      "test_100_runs",
-      "exp_edge_ft_small_001"
+      "exp_web_request_001"
     ],
-    "sessions_with_gcp_data": []
+    "sessions_with_gcp_data": [],
+    "sessions_test_only": []
   },
   "data": {
     "db_path": "/home/dem/major_project/edge_cloud_study/data/results.db",
@@ -150,6 +148,8 @@
     "Edge traffic now originates from Machine B over local network (192.168.1.x). topology.py server_only mode used \u2014 no dept containers. iperf3/HTTP servers run on Machine A host (not in container) because Containernet overrides Docker network namespace, preventing port_bindings from routing external traffic. Machine B sends iperf3/HTTP to Machine A's local IP on those ports. Client energy now symmetric between edge and cloud runs.",
     "Pipeline validation at 2026-03-17T20:12:30.349254: 86/86 passed, 0 failed",
     "Pipeline validation at 2026-03-17T20:36:05.655343: 86/86 passed, 0 failed",
-    "KNOWN: Containernet OVS bridge adds overhead \u2014 LAN iperf3 throughput ~10-12 Mbps instead of expected gigabit. Traffic still flows over LAN (192.168.1.x), Machine B energy is real transmission energy. Bandwidth difference edge vs cloud is a legitimate experimental variable."
+    "KNOWN: Containernet OVS bridge adds overhead \u2014 LAN iperf3 throughput ~10-12 Mbps instead of expected gigabit. Traffic still flows over LAN (192.168.1.x), Machine B energy is real transmission energy. Bandwidth difference edge vs cloud is a legitimate experimental variable.",
+    "All data cleared on 2026-03-17T21:41:55.413186. Ready for real experiment runs.",
+    "All data cleared on 2026-03-17T21:55:03.651906. Ready for real experiment runs."
   ]
 }
