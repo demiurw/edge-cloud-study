@@ -21,11 +21,15 @@ EXPORTS_DIR="$PROJECT_DIR/exports"
 UTILS_DIR="$PROJECT_DIR/scripts/utils"
 MEMORY_FILE="$PROJECT_DIR/AGENT_MEMORY.json"
 
-# --- Read Machine B config ---
+# --- Read config from AGENT_MEMORY.json ---
 CLIENT_IP=$(python3   -c "import json; m=json.load(open('$MEMORY_FILE')); print(m['environment']['client_machine_ip'])")
 CLIENT_USER=$(python3 -c "import json; m=json.load(open('$MEMORY_FILE')); print(m['environment']['client_machine_user'])")
 SSH_KEY=$(python3     -c "import json; m=json.load(open('$MEMORY_FILE')); print(m['environment']['client_machine_ssh_key'])")
 SSH_CLIENT="ssh -o StrictHostKeyChecking=no -i $SSH_KEY ${CLIENT_USER}@${CLIENT_IP}"
+
+MEM_INSTANCE_IP=$(python3  -c "import json; m=json.load(open('$MEMORY_FILE')); print(m['environment']['gcp_instance_ip'])")
+MEM_PROJECT_ID=$(python3   -c "import json; m=json.load(open('$MEMORY_FILE')); print(m['environment']['gcp_project_id'])")
+MEM_INSTANCE_ID=$(python3  -c "import json; m=json.load(open('$MEMORY_FILE')); print(m['environment']['gcp_instance_id'])")
 
 # --- Parse arguments ---
 SESSION_ID=""
@@ -49,9 +53,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Fall back to AGENT_MEMORY.json values if not provided on CLI
+INSTANCE_IP="${INSTANCE_IP:-$MEM_INSTANCE_IP}"
+PROJECT_ID="${PROJECT_ID:-$MEM_PROJECT_ID}"
+INSTANCE_ID="${INSTANCE_ID:-$MEM_INSTANCE_ID}"
+
 if [[ -z "$SESSION_ID" || -z "$WORKLOAD" || -z "$INSTANCE_IP" || \
       -z "$PROJECT_ID" || -z "$INSTANCE_ID" ]]; then
-    echo "ERROR: --session-id, --workload, --instance-ip, --project-id, --instance-id required"
+    echo "ERROR: --session-id and --workload are required"
     exit 1
 fi
 
@@ -90,7 +99,7 @@ echo "  Machine B OK."
 
 # --- [1] Verify GCP iperf3 server ---
 echo "[1/4] Verifying GCP instance iperf3 server..."
-ssh -o StrictHostKeyChecking=no "ubuntu@$INSTANCE_IP" \
+ssh -o StrictHostKeyChecking=no -i ~/.ssh/google_compute_engine "ubuntu@$INSTANCE_IP" \
     "pkill iperf3 2>/dev/null; iperf3 -s -D" 2>/dev/null || true
 
 # --- [1b] Verify Machine B can reach GCP instance ---
@@ -246,6 +255,7 @@ PYEOF
         rm -f "$IPERF3_TMP"
 
     elif [[ "$WORKLOAD" == "web_request" ]]; then
+        TIMESTAMP_END=""  # will be set after requests complete
         # HTTP requests originate FROM Machine B to GCP
         RESULT=$($SSH_CLIENT python3 << PYEOF
 import urllib.request, json, time
@@ -269,7 +279,7 @@ print(json.dumps({
     'workload_type':    'web_request',
     'workload_size_mb': total_bytes / (1024*1024),
     'timestamp_start':  '${TIMESTAMP_START}',
-    'timestamp_end':    '${TIMESTAMP_END}',
+    'timestamp_end':    '',
     'duration_seconds': elapsed,
     'data_sent_mb':     total_bytes / (1024*1024),
     'bandwidth_out_mb': (total_bytes/(1024*1024))/elapsed if elapsed > 0 else 0,
@@ -279,6 +289,12 @@ print(json.dumps({
 }))
 PYEOF
 )
+        TIMESTAMP_END=$(date -Iseconds)
+        RESULT=$(echo "$RESULT" | python3 -c "
+import json, sys
+r = json.load(sys.stdin)
+r['timestamp_end'] = '$TIMESTAMP_END'
+print(json.dumps(r))")
         echo "$RESULT" >> "$CLOUD_LOG"
 
     else
@@ -286,7 +302,7 @@ PYEOF
         # Machine B measures its energy during the wait period.
         # Note: Machine B energy for these workloads reflects waiting/idle overhead,
         #       not active client computation. Recorded but interpreted accordingly.
-        REMOTE_RESULT=$(ssh -o StrictHostKeyChecking=no "ubuntu@$INSTANCE_IP" \
+        REMOTE_RESULT=$(ssh -o StrictHostKeyChecking=no -i ~/.ssh/google_compute_engine "ubuntu@$INSTANCE_IP" \
             "python3 -c \"
 import time, json
 start = time.time()
@@ -469,12 +485,11 @@ echo "Exported client cloud data to: $CLIENT_CSV_FILE"
 
 # --- Between-workload cleanup ---
 echo "Performing between-workload cleanup..."
-gcloud compute ssh edgecloud-server --zone="$ZONE" --project="$PROJECT_ID" \
-    --command="pkill iperf3 2>/dev/null; sleep 2; nohup iperf3 -s -D >/dev/null 2>&1 &" \
-    --quiet 2>/dev/null || true
+ssh -o StrictHostKeyChecking=no -i ~/.ssh/google_compute_engine "ubuntu@$INSTANCE_IP" \
+    "pkill iperf3 2>/dev/null; sleep 2; nohup iperf3 -s -D >/dev/null 2>&1 &" 2>/dev/null || true
 
-if ! gcloud compute ssh edgecloud-server --zone="$ZONE" --project="$PROJECT_ID" \
-        --command="echo OK" --quiet >/dev/null 2>&1; then
+if ! ssh -o StrictHostKeyChecking=no -i ~/.ssh/google_compute_engine "ubuntu@$INSTANCE_IP" \
+        "echo OK" >/dev/null 2>&1; then
     echo "  WARNING: GCP instance health check failed. Verify instance state."
 fi
 
@@ -498,3 +513,14 @@ echo "============================================"
 echo "  Workload batch complete. Instance still running."
 echo "  Ready for next batch."
 echo "============================================"
+
+# --- Backup DB to GitHub ---
+echo ""
+echo "Backing up database to GitHub..."
+DUMP_PATH="$PROJECT_DIR/data/results_dump.sql"
+sqlite3 "$DB_PATH" .dump > "$DUMP_PATH"
+
+cd "$PROJECT_DIR"
+git add data/results_dump.sql
+git commit -m "data: ${SESSION_ID} ${WORKLOAD} — $(date -Iseconds)" || echo "  Nothing new to commit."
+git push origin master && echo "  Backup pushed to GitHub." || echo "  WARNING: git push failed. Run manually: git push origin master"

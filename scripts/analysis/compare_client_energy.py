@@ -88,14 +88,16 @@ def main():
         return f"{val:.{decimals}f} {unit}".strip()
 
     edge_j_req = fmt(edge_stats['mean_j_per_run'], "J") if edge_stats else "N/A"
-    edge_j_gb = fmt(edge_stats['mean_j_per_gb'], "J") if edge_stats else "N/A"
+    # J per GB is not meaningful for web_request: response body is negligible (<1 KB per request)
+    # so dividing Joules by near-zero GB produces astronomical and misleading values.
+    edge_j_gb = "N/A" if workload == "web_request" else (fmt(edge_stats['mean_j_per_gb'], "J") if edge_stats else "N/A")
     edge_watts = fmt(edge_stats['mean_watts'], "W avg") if edge_stats else "N/A"
     edge_total = fmt(edge_stats['total_joules'], "J") if edge_stats else "N/A"
     edge_std = fmt(edge_stats['std_dev_j'], "J") if edge_stats else "N/A"
     edge_rt = fmt(edge_stats['mean_response_ms'], "ms") if edge_stats else "N/A"
 
     cloud_j_req = fmt(cloud_stats['mean_j_per_run'], "J") if cloud_stats else "N/A"
-    cloud_j_gb = fmt(cloud_stats['mean_j_per_gb'], "J") if cloud_stats else "N/A"
+    cloud_j_gb = "N/A" if workload == "web_request" else (fmt(cloud_stats['mean_j_per_gb'], "J") if cloud_stats else "N/A")
     cloud_watts = fmt(cloud_stats['mean_watts'], "W avg") if cloud_stats else "N/A"
     cloud_total = fmt(cloud_stats['total_joules'], "J") if cloud_stats else "N/A"
     cloud_std = fmt(cloud_stats['std_dev_j'], "J") if cloud_stats else "N/A"
@@ -135,6 +137,10 @@ def main():
     print(f"")
     print(f"  More efficient environment: {more_efficient}")
     print(f"  Energy difference: {difference_str}")
+    if workload == "web_request":
+        print(f"")
+        print(f"  * J per GB not applicable for web_request: response body is negligible")
+        print(f"    (<1 KB per request), so GB-normalised energy is not a meaningful metric.")
     print(f"")
     print(f"  *Note: Cloud SERVER-SIDE energy is pending GCP Carbon Footprint API data.")
     print(f"         It will be appended to exports/comparison_client_{workload}.csv when available.")
@@ -145,7 +151,10 @@ def main():
     with open(csv_path, "w") as f:
         f.write("Metric,Edge_Client_Measured,Cloud_Client_Measured\n")
         f.write(f"J_per_run,{edge_stats['mean_j_per_run'] if edge_stats else ''},{cloud_stats['mean_j_per_run'] if cloud_stats else ''}\n")
-        f.write(f"J_per_GB,{edge_stats['mean_j_per_gb'] if edge_stats else ''},{cloud_stats['mean_j_per_gb'] if cloud_stats else ''}\n")
+        if workload == "web_request":
+            f.write("J_per_GB,N/A (not applicable),N/A (not applicable)\n")
+        else:
+            f.write(f"J_per_GB,{edge_stats['mean_j_per_gb'] if edge_stats else ''},{cloud_stats['mean_j_per_gb'] if cloud_stats else ''}\n")
         f.write(f"Watts_avg,{edge_stats['mean_watts'] if edge_stats else ''},{cloud_stats['mean_watts'] if cloud_stats else ''}\n")
         f.write(f"Total_J,{edge_stats['total_joules'] if edge_stats else ''},{cloud_stats['total_joules'] if cloud_stats else ''}\n")
         f.write(f"Std_Dev_J,{edge_stats['std_dev_j'] if edge_stats else ''},{cloud_stats['std_dev_j'] if cloud_stats else ''}\n")

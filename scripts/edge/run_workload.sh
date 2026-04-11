@@ -130,7 +130,16 @@ if ! echo "$START_OUTPUT" | grep -q "EDGE_SERVER_READY"; then
 fi
 
 EDGE_SERVER_IP=$(python3 -c "import json; print(json.load(open('$STATE_FILE'))['server_ip'])")
-echo "  Edge server IP: $EDGE_SERVER_IP"
+
+# If a Tailscale IP is configured for Machine A, use it so remote Machine B
+# can reach the edge server. Leave unset for local Machine B (LAN) setups.
+TAILSCALE_IP=$(python3 -c "import json; m=json.load(open('$MEMORY_FILE')); print(m['environment'].get('machine_a_tailscale_ip', ''))" 2>/dev/null || echo "")
+if [[ -n "$TAILSCALE_IP" ]]; then
+    EDGE_SERVER_IP="$TAILSCALE_IP"
+    echo "  Edge server IP: $EDGE_SERVER_IP (Tailscale)"
+else
+    echo "  Edge server IP: $EDGE_SERVER_IP (LAN)"
+fi
 
 # --- [3] Verify Machine B can reach edge server ---
 echo "[3/9] Verifying Machine B can reach edge server ($EDGE_SERVER_IP)..."
